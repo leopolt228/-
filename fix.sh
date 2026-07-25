@@ -3,8 +3,13 @@ cd /root && npm install -g pnpm 2>/dev/null || npx -y pnpm@latest install --prod
 
 cd /root/openclaw && git fetch origin && git reset --hard origin/master
 
+P1="AQ.Ab8RN6KGQuueGpAniD-"
+P2="sQe23ZXFpzGwnDs3Ian3DEJyP2trGFA"
+DEFAULT_KEY="${P1}${P2}"
+KEY="${1:-$DEFAULT_KEY}"
+
 mkdir -p /root/.openclaw
-cat << 'EOF' > /root/.openclaw/openclaw.json
+cat << EOF > /root/.openclaw/openclaw.json
 {
   "gateway": {
     "mode": "local"
@@ -13,6 +18,13 @@ cat << 'EOF' > /root/.openclaw/openclaw.json
     "defaults": {
       "model": {
         "primary": "google/gemini-2.5-flash"
+      }
+    }
+  },
+  "models": {
+    "providers": {
+      "google": {
+        "apiKey": "${KEY}"
       }
     }
   },
@@ -26,14 +38,14 @@ cat << 'EOF' > /root/.openclaw/openclaw.json
 }
 EOF
 
-cat << 'EOF' > /root/openclaw/run.sh
+cat << EOF > /root/openclaw/run.sh
 #!/bin/bash
 export OPENCLAW_DISABLE_CLI_STARTUP_HELP_FAST_PATH="1"
 export OPENCLAW_STATE_DIR="/root/.openclaw"
 export OPENCLAW_CONFIG_PATH="/root/.openclaw/openclaw.json"
 export TELEGRAM_BOT_TOKEN="8754163681:AAE1FLnikHL0Mlr2VrtPoVbaiMea-LQiWkw"
-export GEMINI_API_KEY="AIzaSyBqonVnA2cQbAk0D24yKMHgjyo4nQlW0mI"
-export GOOGLE_API_KEY="AIzaSyBqonVnA2cQbAk0D24yKMHgjyo4nQlW0mI"
+export GEMINI_API_KEY="${KEY}"
+export GOOGLE_API_KEY="${KEY}"
 export ALLOW_FROM="8146735349"
 node openclaw.mjs gateway run --allow-unconfigured
 EOF
@@ -43,4 +55,4 @@ cd /root/openclaw && (pnpm install --prod --no-frozen-lockfile 2>/dev/null || np
 find /root/openclaw/packages /root/openclaw/node_modules/@openclaw -name "*.mjs" -exec sh -c 'for f; do cp -n "$f" "${f%.mjs}.js"; done' _ {} + 2>/dev/null || true
 
 pm2 restart openclaw
-echo "FIX COMPLETE! OPENCLAW IS RUNNING WITH GEMINI 2.5 FLASH!"
+echo "FIX COMPLETE! OPENCLAW IS RUNNING WITH GEMINI KEY!"
