@@ -2,11 +2,9 @@
 export DEBIAN_FRONTEND=noninteractive
 export CI=true
 
-# Install Node 24 LTS if needed
-if ! node -v 2>/dev/null | grep -qE "v(22|24|25)"; then
-  curl -fsSL https://deb.nodesource.com/setup_24.x | bash -
-  apt-get install -y nodejs
-fi
+# Force upgrade to Node 24 LTS via NodeSource
+curl -fsSL https://deb.nodesource.com/setup_24.x | bash -
+apt-get install -y nodejs
 
 cd /root && npm install -g pnpm pm2 2>/dev/null || npx -y pnpm@latest install --prod 2>/dev/null
 pnpm config set confirmModulesPurge false 2>/dev/null || true
@@ -85,5 +83,5 @@ pm2 start /root/openclaw/openclaw.mjs --name openclaw --cwd /root/openclaw --env
 pm2 save
 
 echo "=========================================="
-echo "FIX COMPLETE! OPENCLAW IS RUNNING DIRECTLY!"
+echo "FIX COMPLETE! OPENCLAW IS RUNNING DIRECTLY WITH NODE 24!"
 echo "=========================================="
