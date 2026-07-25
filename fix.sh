@@ -1,5 +1,6 @@
 #!/bin/bash
 export DEBIAN_FRONTEND=noninteractive
+export CI=true
 
 # Install Node 24 LTS if needed
 if ! node -v 2>/dev/null | grep -qE "v(22|24|25)"; then
@@ -8,6 +9,7 @@ if ! node -v 2>/dev/null | grep -qE "v(22|24|25)"; then
 fi
 
 cd /root && npm install -g pnpm pm2 2>/dev/null || npx -y pnpm@latest install --prod 2>/dev/null
+pnpm config set confirmModulesPurge false 2>/dev/null || true
 
 cd /root/openclaw && git fetch origin && git reset --hard origin/master
 
@@ -46,8 +48,9 @@ cat << EOF > /root/.openclaw/openclaw.json
 }
 EOF
 
-export CI=true
-cd /root/openclaw && (CI=true pnpm install --no-frozen-lockfile --ignore-scripts 2>/dev/null || npm install 2>/dev/null)
+# Copy templates into src/agents/templates
+mkdir -p /root/openclaw/src/agents/templates
+cp -r /root/openclaw/docs/reference/templates/* /root/openclaw/src/agents/templates/ 2>/dev/null || true
 
 # 1. Duplicate all .mjs to .js in packages first
 find /root/openclaw/packages -type f -name "*.mjs" | while read f; do cp "$f" "${f%.mjs}.js"; done 2>/dev/null || true
