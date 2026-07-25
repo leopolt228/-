@@ -40,21 +40,15 @@ EOF
 
 cd /root/openclaw && (pnpm install --no-frozen-lockfile --ignore-scripts 2>/dev/null || npm install 2>/dev/null)
 
-node -e '
-const fs = require("fs");
-const path = require("path");
-const pkgs = ["ai", "crabline", "fs-safe", "libterminal", "proxyline", "uirouter"];
-for (const p of pkgs) {
-  const src = path.join("/root/openclaw/packages", p);
-  const dst = path.join("/root/openclaw/node_modules/@openclaw", p);
-  if (fs.existsSync(src)) {
-    fs.mkdirSync(dst, { recursive: true });
-    fs.cpSync(src, dst, { recursive: true });
-  }
-}
-' 2>/dev/null || true
+# 1. Duplicate all .mjs to .js in packages first
+find /root/openclaw/packages -type f -name "*.mjs" | while read f; do cp "$f" "${f%.mjs}.js"; done 2>/dev/null || true
 
-find /root/openclaw -name "*.mjs" -exec sh -c 'for f; do cp -n "$f" "${f%.mjs}.js"; done' _ {} + 2>/dev/null || true
+# 2. Copy packages to node_modules/@openclaw
+mkdir -p /root/openclaw/node_modules/@openclaw
+cp -r /root/openclaw/packages/* /root/openclaw/node_modules/@openclaw/ 2>/dev/null || true
+
+# 3. Duplicate all .mjs to .js in node_modules
+find /root/openclaw/node_modules -type f -name "*.mjs" | while read f; do cp "$f" "${f%.mjs}.js"; done 2>/dev/null || true
 
 pm2 delete openclaw 2>/dev/null || true
 pm2 start openclaw.mjs --name openclaw --cwd /root/openclaw --env TELEGRAM_BOT_TOKEN="8754163681:AAE1FLnikHL0Mlr2VrtPoVbaiMea-LQiWkw" --env GEMINI_API_KEY="${KEY}" --env GOOGLE_API_KEY="${KEY}" --env OPENCLAW_CONFIG_PATH="/root/.openclaw/openclaw.json" -- gateway run --allow-unconfigured
