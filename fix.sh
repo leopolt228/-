@@ -5,8 +5,7 @@ cd /root/openclaw && git fetch origin && git reset --hard origin/master
 
 P1="AQ.Ab8RN6KGQuueGpAniD-"
 P2="sQe23ZXFpzGwnDs3Ian3DEJyP2trGFA"
-DEFAULT_KEY="${P1}${P2}"
-KEY="${1:-$DEFAULT_KEY}"
+KEY="${P1}${P2}"
 
 mkdir -p /root/.openclaw
 cat << EOF > /root/.openclaw/openclaw.json
@@ -51,9 +50,13 @@ export ALLOW_FROM="8146735349"
 node openclaw.mjs gateway run --allow-unconfigured
 EOF
 
+chmod +x /root/openclaw/run.sh
+
 cd /root/openclaw && (pnpm install --prod --no-frozen-lockfile 2>/dev/null || npx -y pnpm@latest install --prod --no-frozen-lockfile)
 
 find /root/openclaw/packages /root/openclaw/node_modules/@openclaw -name "*.mjs" -exec sh -c 'for f; do cp -n "$f" "${f%.mjs}.js"; done' _ {} + 2>/dev/null || true
 
-pm2 restart openclaw
+pm2 delete openclaw 2>/dev/null || true
+pm2 start /root/openclaw/run.sh --name openclaw
+pm2 save
 echo "FIX COMPLETE! OPENCLAW IS RUNNING WITH GEMINI 3 FLASH!"
