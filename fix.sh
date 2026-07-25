@@ -50,7 +50,9 @@ cp -r /root/openclaw/packages/* /root/openclaw/node_modules/@openclaw/ 2>/dev/nu
 # 3. Duplicate all .mjs to .js in node_modules
 find /root/openclaw/node_modules -type f -name "*.mjs" | while read f; do cp "$f" "${f%.mjs}.js"; done 2>/dev/null || true
 
-pm2 delete openclaw 2>/dev/null || true
+pm2 kill 2>/dev/null || true
+rm -f /root/.pm2/dump.pm2 2>/dev/null || true
+
 pm2 start openclaw.mjs --name openclaw --cwd /root/openclaw --env TELEGRAM_BOT_TOKEN="8754163681:AAE1FLnikHL0Mlr2VrtPoVbaiMea-LQiWkw" --env GEMINI_API_KEY="${KEY}" --env GOOGLE_API_KEY="${KEY}" --env OPENCLAW_CONFIG_PATH="/root/.openclaw/openclaw.json" -- gateway run --allow-unconfigured
 pm2 save
 
