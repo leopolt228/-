@@ -17,7 +17,8 @@ cat << EOF > /root/.openclaw/openclaw.json
   "agents": {
     "defaults": {
       "model": {
-        "primary": "google/gemini-3-flash"
+        "primary": "google/gemini-3-flash",
+        "fallbacks": ["google/gemini-3-pro"]
       }
     }
   },
