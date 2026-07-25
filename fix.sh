@@ -52,12 +52,13 @@ EOF
 mkdir -p /root/openclaw/src/agents/templates
 cp -r /root/openclaw/docs/reference/templates/* /root/openclaw/src/agents/templates/ 2>/dev/null || true
 
+# Purge old node_modules and re-install clean production modules
+rm -rf /root/openclaw/node_modules
+cd /root/openclaw && pnpm install --prod 2>/dev/null || true
+
 # Copy packages into node_modules/@openclaw
 mkdir -p /root/openclaw/node_modules/@openclaw
 cp -r /root/openclaw/packages/* /root/openclaw/node_modules/@openclaw/ 2>/dev/null || true
-
-# Run pnpm install --prod to restore pristine node_modules
-cd /root/openclaw && pnpm install --prod 2>/dev/null || true
 
 # Fix event-stream.js mapping only in @openclaw packages
 python3 -c '
