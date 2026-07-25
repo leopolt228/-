@@ -1,0 +1,1787 @@
+// packages/ai/src/providers/openai-responses-tools.ts
+import { createHash } from "node:crypto";
+
+// packages/ai/src/host.ts
+var inertAiTransportHost = {
+  buildModelFetch: () => void 0,
+  resolveSecretSentinel: (value) => value,
+  redactSecrets: (value) => value,
+  redactToolPayloadText: (text) => text,
+  resolveOpenAIStrictToolSetting: (_model, options) => options?.supportsStrictMode ? false : void 0,
+  logDebug: () => {
+  }
+};
+var activeAiTransportHost = inertAiTransportHost;
+function getAiTransportHost() {
+  return activeAiTransportHost;
+}
+
+// packages/normalization-core/src/record-coerce.ts
+function isRecord(value) {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+// packages/ai/src/providers/tool-schema-json-projection.ts
+import { types as utilTypes } from "node:util";
+function isJsonValue(value) {
+  if (value === null) {
+    return true;
+  }
+  switch (typeof value) {
+    case "boolean":
+    case "string":
+      return true;
+    case "number":
+      return Number.isFinite(value);
+    case "object":
+      if (Array.isArray(value)) {
+        return value.every(isJsonValue);
+      }
+      return Object.values(value).every(isJsonValue);
+    default:
+      return false;
+  }
+}
+function isJsonObject(value) {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+function isNonFiniteNumberValue(value) {
+  if (typeof value === "number") {
+    return !Number.isFinite(value);
+  }
+  if (value === null || typeof value !== "object" || !utilTypes.isNumberObject(value)) {
+    return false;
+  }
+  return !Number.isFinite(Number.prototype.valueOf.call(value));
+}
+function serializeToolInputSchema(value, path) {
+  const nonFiniteNumber = {
+    path: null
+  };
+  const paths = /* @__PURE__ */ new WeakMap();
+  let isRoot = true;
+  let text;
+  try {
+    text = JSON.stringify(value, function(key, entry) {
+      const holderPath = paths.get(this);
+      const entryPath = isRoot ? path : holderPath === void 0 ? `${path}.${key}` : Array.isArray(this) ? `${holderPath}[${key}]` : `${holderPath}.${key}`;
+      isRoot = false;
+      if (nonFiniteNumber.path === null && isNonFiniteNumberValue(entry)) {
+        nonFiniteNumber.path = entryPath;
+      } else if (entry && typeof entry === "object") {
+        paths.set(entry, entryPath);
+      }
+      return entry;
+    });
+  } catch {
+    return {
+      schema: {},
+      violations: [`${path} is not JSON-serializable`]
+    };
+  }
+  if (!text) {
+    return {
+      schema: {},
+      violations: [`${path} is not JSON-serializable`]
+    };
+  }
+  if (nonFiniteNumber.path !== null) {
+    const violationPath = nonFiniteNumber.path;
+    return {
+      schema: {},
+      violations: [`${violationPath} is not JSON-serializable`]
+    };
+  }
+  const parsed = JSON.parse(text);
+  if (!isJsonValue(parsed)) {
+    return {
+      schema: {},
+      violations: [`${path} is not a JSON value`]
+    };
+  }
+  return {
+    schema: parsed,
+    violations: []
+  };
+}
+var schemaMapKeywords = /* @__PURE__ */ new Set([
+  "$defs",
+  "definitions",
+  "dependencies",
+  "dependentSchemas",
+  "patternProperties",
+  "properties"
+]);
+function findDynamicSchemaKeywordViolations(schema, path) {
+  if (Array.isArray(schema)) {
+    return schema.flatMap(
+      (entry, index) => findDynamicSchemaKeywordViolations(entry, `${path}[${index}]`)
+    );
+  }
+  if (!isJsonObject(schema)) {
+    return [];
+  }
+  const violations = [];
+  for (const key of ["$dynamicRef", "$dynamicAnchor"]) {
+    if (key in schema) {
+      violations.push(`${path}.${key}`);
+    }
+  }
+  for (const [key, value] of Object.entries(schema)) {
+    if (!value || typeof value !== "object") {
+      continue;
+    }
+    if (schemaMapKeywords.has(key) && isJsonObject(value)) {
+      for (const [schemaName, childSchema] of Object.entries(value)) {
+        violations.push(
+          ...findDynamicSchemaKeywordViolations(childSchema, `${path}.${key}.${schemaName}`)
+        );
+      }
+    } else {
+      violations.push(...findDynamicSchemaKeywordViolations(value, `${path}.${key}`));
+    }
+  }
+  return violations;
+}
+function projectRuntimeToolInputSchema(schema, path = "parameters") {
+  const projection = serializeToolInputSchema(schema, path);
+  const violations = [...projection.violations];
+  if (!isJsonObject(projection.schema)) {
+    violations.push(`${path} must be a JSON object schema`);
+  } else if (projection.schema.type !== void 0 && projection.schema.type !== "object") {
+    violations.push(`${path}.type must be "object"`);
+  }
+  violations.push(...findDynamicSchemaKeywordViolations(projection.schema, path));
+  return {
+    schema: projection.schema,
+    violations
+  };
+}
+
+// packages/ai/src/providers/openai-tool-projection.ts
+function unreadableToolDiagnostic(toolIndex) {
+  return {
+    toolIndex,
+    violations: [`tool[${toolIndex}] is unreadable`]
+  };
+}
+function projectOpenAITools(tools) {
+  let inputToolCount;
+  try {
+    inputToolCount = tools.length;
+  } catch {
+    return {
+      inputToolCount: 0,
+      tools: [],
+      diagnostics: [unreadableToolDiagnostic(0)]
+    };
+  }
+  const projectedTools = [];
+  const diagnostics = [];
+  for (let toolIndex = 0; toolIndex < inputToolCount; toolIndex += 1) {
+    let tool;
+    try {
+      const candidate = tools[toolIndex];
+      if (!candidate) {
+        diagnostics.push(unreadableToolDiagnostic(toolIndex));
+        continue;
+      }
+      tool = candidate;
+    } catch {
+      diagnostics.push(unreadableToolDiagnostic(toolIndex));
+      continue;
+    }
+    let name;
+    try {
+      name = tool.name;
+    } catch {
+      diagnostics.push({
+        toolIndex,
+        violations: [`tool[${toolIndex}].name is unreadable`]
+      });
+      continue;
+    }
+    if (typeof name !== "string" || !name) {
+      diagnostics.push({
+        toolIndex,
+        violations: [`tool[${toolIndex}].name is empty`]
+      });
+      continue;
+    }
+    let parameters;
+    try {
+      parameters = tool.parameters;
+    } catch {
+      diagnostics.push({
+        toolIndex,
+        toolName: name,
+        violations: [`${name}.parameters is unreadable`]
+      });
+      continue;
+    }
+    const schemaProjection = projectRuntimeToolInputSchema(parameters ?? {}, `${name}.parameters`);
+    if (!isRecord(schemaProjection.schema) || schemaProjection.violations.length > 0) {
+      diagnostics.push({
+        toolIndex,
+        toolName: name,
+        violations: schemaProjection.violations.length > 0 ? schemaProjection.violations : [`${name}.parameters must be a JSON object schema`]
+      });
+      continue;
+    }
+    let descriptionValue;
+    try {
+      descriptionValue = tool.description;
+    } catch {
+    }
+    const description = typeof descriptionValue === "string" ? descriptionValue : void 0;
+    projectedTools.push({
+      toolIndex,
+      name,
+      ...description !== void 0 ? { description } : {},
+      parameters: schemaProjection.schema
+    });
+  }
+  return {
+    inputToolCount,
+    tools: projectedTools,
+    diagnostics
+  };
+}
+
+// packages/normalization-core/src/string-coerce.ts
+function normalizeNullableString(value) {
+  if (typeof value !== "string") {
+    return null;
+  }
+  const trimmed = value.trim();
+  return trimmed ? trimmed : null;
+}
+function normalizeOptionalString(value) {
+  return normalizeNullableString(value) ?? void 0;
+}
+function normalizeOptionalLowercaseString(value) {
+  return normalizeOptionalString(value)?.toLowerCase();
+}
+function normalizeLowercaseStringOrEmpty(value) {
+  return normalizeOptionalLowercaseString(value) ?? "";
+}
+
+// packages/normalization-core/src/string-normalization.ts
+function normalizeStringEntries(list) {
+  return (list ?? []).map((entry) => normalizeOptionalString(String(entry)) ?? "").filter(Boolean);
+}
+function uniqueValues(values) {
+  return [...new Set(values)];
+}
+
+// packages/ai/src/providers/clean-for-gemini.ts
+var GEMINI_UNSUPPORTED_SCHEMA_KEYWORDS = /* @__PURE__ */ new Set([
+  "patternProperties",
+  "additionalProperties",
+  "$schema",
+  "$id",
+  "$ref",
+  "$defs",
+  "definitions",
+  // Non-standard (OpenAPI) keyword; Claude validators reject it.
+  "examples",
+  // Cloud Code Assist appears to validate tool schemas more strictly/quirkily than
+  // draft 2020-12 in practice; these constraints frequently trigger 400s.
+  "minLength",
+  "maxLength",
+  "minimum",
+  "maximum",
+  "multipleOf",
+  "pattern",
+  "format",
+  "minItems",
+  "maxItems",
+  "uniqueItems",
+  "minProperties",
+  "maxProperties",
+  // JSON Schema composition keywords not supported by OpenAPI 3.0 subset.
+  // `const` is handled separately (converted to enum) in the cleaning loop,
+  // but `not` has no safe equivalent and must be stripped.
+  "not"
+]);
+var SCHEMA_META_KEYS = ["description", "title", "default"];
+function copySchemaMeta(from, to) {
+  for (const key of SCHEMA_META_KEYS) {
+    if (key in from && from[key] !== void 0) {
+      to[key] = from[key];
+    }
+  }
+}
+function stringifyGeminiEnumValue(value) {
+  if (typeof value === "string") {
+    return value;
+  }
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return String(value);
+  }
+  if (typeof value === "boolean") {
+    return String(value);
+  }
+  return void 0;
+}
+function cleanGeminiEnumValues(value) {
+  if (!Array.isArray(value)) {
+    return void 0;
+  }
+  const values = value.flatMap((entry) => {
+    const stringified = stringifyGeminiEnumValue(entry);
+    return stringified === void 0 ? [] : [stringified];
+  });
+  const unique = [...new Set(values)];
+  return unique.length > 0 ? unique : void 0;
+}
+function tryFlattenLiteralAnyOf(variants) {
+  if (variants.length === 0) {
+    return null;
+  }
+  const allValues = [];
+  let commonType = null;
+  for (const variant of variants) {
+    if (!variant || typeof variant !== "object") {
+      return null;
+    }
+    const v = variant;
+    let literalValue;
+    if ("const" in v) {
+      literalValue = v.const;
+    } else if (Array.isArray(v.enum) && v.enum.length === 1) {
+      literalValue = v.enum[0];
+    } else {
+      return null;
+    }
+    const variantType = typeof v.type === "string" ? v.type : null;
+    if (!variantType) {
+      return null;
+    }
+    if (commonType === null) {
+      commonType = variantType;
+    } else if (commonType !== variantType) {
+      return null;
+    }
+    allValues.push(literalValue);
+  }
+  if (commonType && allValues.length > 0) {
+    return { type: commonType, enum: allValues };
+  }
+  return null;
+}
+function isNullSchema(variant) {
+  if (!variant || typeof variant !== "object" || Array.isArray(variant)) {
+    return false;
+  }
+  const record = variant;
+  if ("const" in record && record.const === null) {
+    return true;
+  }
+  if (Array.isArray(record.enum) && record.enum.length === 1) {
+    return record.enum[0] === null;
+  }
+  const typeValue = record.type;
+  if (typeValue === "null") {
+    return true;
+  }
+  if (Array.isArray(typeValue) && typeValue.length === 1 && typeValue[0] === "null") {
+    return true;
+  }
+  return false;
+}
+function stripNullVariants(variants) {
+  if (variants.length === 0) {
+    return { variants, stripped: false };
+  }
+  const nonNull = variants.filter((variant) => !isNullSchema(variant));
+  return {
+    variants: nonNull,
+    stripped: nonNull.length !== variants.length
+  };
+}
+function extendSchemaDefs(defs, schema) {
+  const defsEntry = schema.$defs && typeof schema.$defs === "object" && !Array.isArray(schema.$defs) ? schema.$defs : void 0;
+  const legacyDefsEntry = schema.definitions && typeof schema.definitions === "object" && !Array.isArray(schema.definitions) ? schema.definitions : void 0;
+  if (!defsEntry && !legacyDefsEntry) {
+    return defs;
+  }
+  const next = defs ? new Map(defs) : /* @__PURE__ */ new Map();
+  if (defsEntry) {
+    for (const [key, value] of Object.entries(defsEntry)) {
+      next.set(key, value);
+    }
+  }
+  if (legacyDefsEntry) {
+    for (const [key, value] of Object.entries(legacyDefsEntry)) {
+      next.set(key, value);
+    }
+  }
+  return next;
+}
+function decodeJsonPointerSegment(segment) {
+  return segment.replaceAll("~1", "/").replaceAll("~0", "~");
+}
+function tryResolveLocalRef(ref, defs) {
+  if (!defs) {
+    return void 0;
+  }
+  const match = ref.match(/^#\/(?:\$defs|definitions)\/(.+)$/);
+  if (!match) {
+    return void 0;
+  }
+  const name = decodeJsonPointerSegment(match[1] ?? "");
+  if (!name) {
+    return void 0;
+  }
+  return defs.get(name);
+}
+function simplifyUnionVariants(params) {
+  const { obj, variants } = params;
+  const { variants: nonNullVariants, stripped } = stripNullVariants(variants);
+  const flattened = tryFlattenLiteralAnyOf(nonNullVariants);
+  if (flattened) {
+    const result = {
+      type: flattened.type,
+      enum: flattened.enum
+    };
+    copySchemaMeta(obj, result);
+    return { variants: nonNullVariants, simplified: result };
+  }
+  if (stripped && nonNullVariants.length === 1) {
+    const lone = nonNullVariants[0];
+    if (lone && typeof lone === "object" && !Array.isArray(lone)) {
+      const result = {
+        ...lone
+      };
+      copySchemaMeta(obj, result);
+      return { variants: nonNullVariants, simplified: result };
+    }
+    return { variants: nonNullVariants, simplified: lone };
+  }
+  return { variants: stripped ? nonNullVariants : variants };
+}
+function sanitizeRequiredFields(schema) {
+  if (!Array.isArray(schema.required)) {
+    return schema;
+  }
+  if (!schema.properties || typeof schema.properties !== "object" || Array.isArray(schema.properties)) {
+    if (schema.type === "object") {
+      delete schema.required;
+    }
+    return schema;
+  }
+  const properties = schema.properties;
+  const required = schema.required.filter(
+    (key) => typeof key === "string" && Object.hasOwn(properties, key)
+  );
+  if (required.length > 0) {
+    schema.required = required;
+  } else {
+    delete schema.required;
+  }
+  return schema;
+}
+function cleanSchemaForGeminiWithDefs(schema, defs, refStack) {
+  if (!schema || typeof schema !== "object") {
+    return schema;
+  }
+  if (Array.isArray(schema)) {
+    return schema.map((item) => cleanSchemaForGeminiWithDefs(item, defs, refStack));
+  }
+  const obj = schema;
+  const nextDefs = extendSchemaDefs(defs, obj);
+  const refValue = typeof obj.$ref === "string" ? obj.$ref : void 0;
+  if (refValue) {
+    if (refStack?.has(refValue)) {
+      return {};
+    }
+    const resolved = tryResolveLocalRef(refValue, nextDefs);
+    if (resolved) {
+      const nextRefStack = refStack ? new Set(refStack) : /* @__PURE__ */ new Set();
+      nextRefStack.add(refValue);
+      const cleaned2 = cleanSchemaForGeminiWithDefs(resolved, nextDefs, nextRefStack);
+      if (!cleaned2 || typeof cleaned2 !== "object" || Array.isArray(cleaned2)) {
+        return cleaned2;
+      }
+      const result2 = {
+        ...cleaned2
+      };
+      copySchemaMeta(obj, result2);
+      return result2;
+    }
+    const result = {};
+    copySchemaMeta(obj, result);
+    return result;
+  }
+  const hasAnyOf = "anyOf" in obj && Array.isArray(obj.anyOf);
+  const hasOneOf = "oneOf" in obj && Array.isArray(obj.oneOf);
+  let cleanedAnyOf = hasAnyOf ? obj.anyOf.map(
+    (variant) => cleanSchemaForGeminiWithDefs(variant, nextDefs, refStack)
+  ) : void 0;
+  let cleanedOneOf = hasOneOf ? obj.oneOf.map(
+    (variant) => cleanSchemaForGeminiWithDefs(variant, nextDefs, refStack)
+  ) : void 0;
+  if (hasAnyOf) {
+    const simplified = simplifyUnionVariants({ obj, variants: cleanedAnyOf ?? [] });
+    cleanedAnyOf = simplified.variants;
+    if ("simplified" in simplified) {
+      return simplified.simplified;
+    }
+  }
+  if (hasOneOf) {
+    const simplified = simplifyUnionVariants({ obj, variants: cleanedOneOf ?? [] });
+    cleanedOneOf = simplified.variants;
+    if ("simplified" in simplified) {
+      return simplified.simplified;
+    }
+  }
+  const cleaned = {};
+  for (const [key, value] of Object.entries(obj)) {
+    if (GEMINI_UNSUPPORTED_SCHEMA_KEYWORDS.has(key)) {
+      continue;
+    }
+    if (key === "const") {
+      const enumValues = cleanGeminiEnumValues([value]);
+      if (enumValues) {
+        cleaned.enum = enumValues;
+      }
+      continue;
+    }
+    if (key === "enum") {
+      const enumValues = cleanGeminiEnumValues(value);
+      if (enumValues) {
+        cleaned.enum = enumValues;
+      }
+      continue;
+    }
+    if (key === "required" && Array.isArray(value) && value.length === 0) {
+      continue;
+    }
+    if (key === "type" && (hasAnyOf || hasOneOf)) {
+      continue;
+    }
+    if (key === "type" && Array.isArray(value) && value.every((entry) => typeof entry === "string")) {
+      const types = value.filter((entry) => entry !== "null");
+      cleaned.type = types.length === 1 ? types[0] : types;
+      continue;
+    }
+    if (key === "properties") {
+      if (value && typeof value === "object" && !Array.isArray(value)) {
+        const props = value;
+        cleaned[key] = Object.fromEntries(
+          Object.entries(props).map(([k, v]) => [
+            k,
+            cleanSchemaForGeminiWithDefs(v, nextDefs, refStack)
+          ])
+        );
+      } else {
+        cleaned[key] = {};
+      }
+    } else if (key === "items" && value) {
+      if (Array.isArray(value)) {
+        cleaned[key] = value.map(
+          (entry) => cleanSchemaForGeminiWithDefs(entry, nextDefs, refStack)
+        );
+      } else if (typeof value === "object") {
+        cleaned[key] = cleanSchemaForGeminiWithDefs(value, nextDefs, refStack);
+      } else {
+        cleaned[key] = value;
+      }
+    } else if (key === "anyOf" && Array.isArray(value)) {
+      cleaned[key] = cleanedAnyOf ?? value.map((variant) => cleanSchemaForGeminiWithDefs(variant, nextDefs, refStack));
+    } else if (key === "oneOf" && Array.isArray(value)) {
+      cleaned[key] = cleanedOneOf ?? value.map((variant) => cleanSchemaForGeminiWithDefs(variant, nextDefs, refStack));
+    } else if (key === "allOf" && Array.isArray(value)) {
+      cleaned[key] = value.map(
+        (variant) => cleanSchemaForGeminiWithDefs(variant, nextDefs, refStack)
+      );
+    } else {
+      cleaned[key] = value;
+    }
+  }
+  if (cleaned.anyOf && Array.isArray(cleaned.anyOf)) {
+    const flattened = flattenUnionFallback(cleaned, cleaned.anyOf);
+    if (flattened) {
+      return sanitizeRequiredFields(flattened);
+    }
+  }
+  if (cleaned.oneOf && Array.isArray(cleaned.oneOf)) {
+    const flattened = flattenUnionFallback(cleaned, cleaned.oneOf);
+    if (flattened) {
+      return sanitizeRequiredFields(flattened);
+    }
+  }
+  return sanitizeRequiredFields(cleaned);
+}
+function flattenUnionFallback(obj, variants) {
+  const objects = variants.filter(
+    (v) => Boolean(v) && typeof v === "object"
+  );
+  if (objects.length === 0) {
+    return void 0;
+  }
+  const types = new Set(objects.map((v) => v.type).filter(Boolean));
+  if (objects.length === 1) {
+    const merged2 = { ...objects[0] };
+    copySchemaMeta(obj, merged2);
+    return merged2;
+  }
+  if (types.size === 1) {
+    const merged2 = { type: Array.from(types)[0] };
+    copySchemaMeta(obj, merged2);
+    return merged2;
+  }
+  const first = objects[0];
+  if (first?.type) {
+    const merged2 = { type: first.type };
+    copySchemaMeta(obj, merged2);
+    return merged2;
+  }
+  const merged = {};
+  copySchemaMeta(obj, merged);
+  return merged;
+}
+function cleanSchemaForGemini(schema) {
+  if (!schema || typeof schema !== "object") {
+    return schema;
+  }
+  if (Array.isArray(schema)) {
+    return schema.map(cleanSchemaForGemini);
+  }
+  const defs = extendSchemaDefs(void 0, schema);
+  return cleanSchemaForGeminiWithDefs(schema, defs, void 0);
+}
+
+// packages/ai/src/providers/schema-keyword-strip.ts
+function stripUnsupportedSchemaKeywords(schema, unsupportedKeywords) {
+  if (!schema || typeof schema !== "object") {
+    return schema;
+  }
+  if (Array.isArray(schema)) {
+    return schema.map((entry) => stripUnsupportedSchemaKeywords(entry, unsupportedKeywords));
+  }
+  const obj = schema;
+  const cleaned = {};
+  for (const [key, value] of Object.entries(obj)) {
+    if (unsupportedKeywords.has(key)) {
+      continue;
+    }
+    if (key === "properties" && value && typeof value === "object" && !Array.isArray(value)) {
+      cleaned[key] = Object.fromEntries(
+        Object.entries(value).map(([childKey, childValue]) => [
+          childKey,
+          stripUnsupportedSchemaKeywords(childValue, unsupportedKeywords)
+        ])
+      );
+      continue;
+    }
+    if (key === "items" && value && typeof value === "object") {
+      cleaned[key] = Array.isArray(value) ? value.map((entry) => stripUnsupportedSchemaKeywords(entry, unsupportedKeywords)) : stripUnsupportedSchemaKeywords(value, unsupportedKeywords);
+      continue;
+    }
+    if ((key === "anyOf" || key === "oneOf" || key === "allOf") && Array.isArray(value)) {
+      cleaned[key] = value.map(
+        (entry) => stripUnsupportedSchemaKeywords(entry, unsupportedKeywords)
+      );
+      continue;
+    }
+    cleaned[key] = value;
+  }
+  return cleaned;
+}
+
+// packages/ai/src/providers/agent-tools-parameter-schema.ts
+function extractToolSchemaModelCompat(modelOrCompat) {
+  if (!modelOrCompat || typeof modelOrCompat !== "object") {
+    return void 0;
+  }
+  if ("compat" in modelOrCompat) {
+    const compat = modelOrCompat.compat;
+    return compat && typeof compat === "object" ? compat : void 0;
+  }
+  return modelOrCompat;
+}
+function resolveUnsupportedToolSchemaKeywords(modelOrCompat) {
+  const keywords = extractToolSchemaModelCompat(modelOrCompat)?.unsupportedToolSchemaKeywords ?? [];
+  return new Set(
+    normalizeStringEntries(
+      keywords.filter((keyword) => typeof keyword === "string")
+    )
+  );
+}
+function shouldOmitEmptyArrayItems(modelOrCompat) {
+  return extractToolSchemaModelCompat(modelOrCompat)?.omitEmptyArrayItems === true;
+}
+var MAX_TOOL_PARAMETER_SCHEMA_CACHE_ENTRIES_PER_SCHEMA = 8;
+var toolParameterSchemaCache = /* @__PURE__ */ new WeakMap();
+function resolveToolParameterSchemaCacheKey(options) {
+  const normalizedProvider = normalizeLowercaseStringOrEmpty(options?.modelProvider);
+  const normalizedModelId = normalizeLowercaseStringOrEmpty(options?.modelId);
+  const toolSchemaProfile = normalizeLowercaseStringOrEmpty(
+    options?.modelCompat?.toolSchemaProfile
+  );
+  const unsupportedKeywords = Array.from(
+    resolveUnsupportedToolSchemaKeywords(options?.modelCompat)
+  ).toSorted();
+  const omitEmptyArrayItems = shouldOmitEmptyArrayItems(options?.modelCompat);
+  return JSON.stringify([
+    normalizedProvider,
+    normalizedModelId,
+    toolSchemaProfile,
+    unsupportedKeywords,
+    omitEmptyArrayItems
+  ]);
+}
+function getCachedToolParameterSchema(schema, key) {
+  return toolParameterSchemaCache.get(schema)?.find((entry) => entry.key === key)?.value;
+}
+function rememberCachedToolParameterSchema(schema, key, value) {
+  const entries = toolParameterSchemaCache.get(schema) ?? [];
+  toolParameterSchemaCache.set(
+    schema,
+    [{ key, value }, ...entries.filter((entry) => entry.key !== key)].slice(
+      0,
+      MAX_TOOL_PARAMETER_SCHEMA_CACHE_ENTRIES_PER_SCHEMA
+    )
+  );
+  return value;
+}
+function isGeminiModelId(modelId) {
+  return /(?:^|[/:])gemini(?:$|[-/:.])/.test(modelId);
+}
+function extractEnumValues(schema) {
+  if (!schema || typeof schema !== "object") {
+    return void 0;
+  }
+  const record = schema;
+  if (Array.isArray(record.enum)) {
+    return record.enum;
+  }
+  if ("const" in record) {
+    return [record.const];
+  }
+  const variants = Array.isArray(record.anyOf) ? record.anyOf : Array.isArray(record.oneOf) ? record.oneOf : null;
+  if (variants) {
+    const values = variants.flatMap((variant) => {
+      const extracted = extractEnumValues(variant);
+      return extracted ?? [];
+    });
+    return values.length > 0 ? values : void 0;
+  }
+  return void 0;
+}
+function mergePropertySchemas(existing, incoming) {
+  if (!existing) {
+    return incoming;
+  }
+  if (!incoming) {
+    return existing;
+  }
+  const existingEnum = extractEnumValues(existing);
+  const incomingEnum = extractEnumValues(incoming);
+  if (existingEnum || incomingEnum) {
+    const values = uniqueValues([...existingEnum ?? [], ...incomingEnum ?? []]);
+    const merged = {};
+    for (const source of [existing, incoming]) {
+      if (!source || typeof source !== "object") {
+        continue;
+      }
+      const record = source;
+      for (const key of ["title", "description", "default"]) {
+        if (!(key in merged) && key in record) {
+          merged[key] = record[key];
+        }
+      }
+    }
+    const types = new Set(values.map((value) => typeof value));
+    if (types.size === 1) {
+      merged.type = Array.from(types)[0];
+    }
+    merged.enum = values;
+    return merged;
+  }
+  return existing;
+}
+function setOwnSchemaProperty(target, key, value) {
+  Object.defineProperty(target, key, {
+    value,
+    enumerable: true,
+    configurable: true,
+    writable: true
+  });
+}
+function hasTopLevelArrayKeyword(schemaRecord, key) {
+  return Array.isArray(schemaRecord[key]);
+}
+function getFlattenableVariantKey(schemaRecord) {
+  if (hasTopLevelArrayKeyword(schemaRecord, "anyOf")) {
+    return "anyOf";
+  }
+  if (hasTopLevelArrayKeyword(schemaRecord, "oneOf")) {
+    return "oneOf";
+  }
+  return null;
+}
+function getTopLevelConditionalKey(schemaRecord) {
+  return getFlattenableVariantKey(schemaRecord) ?? (hasTopLevelArrayKeyword(schemaRecord, "allOf") ? "allOf" : null);
+}
+function hasTopLevelObjectSchema(schemaRecord, conditionalKey) {
+  return schemaRecord.type === "object" && isRecord(schemaRecord.properties) && conditionalKey === null;
+}
+function isObjectLikeSchemaMissingType(schemaRecord, conditionalKey) {
+  return !("type" in schemaRecord) && (isRecord(schemaRecord.properties) || Array.isArray(schemaRecord.required)) && conditionalKey === null;
+}
+function isTypedObjectSchemaMissingValidProperties(schemaRecord, conditionalKey) {
+  return schemaRecord.type === "object" && !isRecord(schemaRecord.properties) && conditionalKey === null;
+}
+function isTrulyEmptySchema(schemaRecord) {
+  return Object.keys(schemaRecord).length === 0;
+}
+function normalizeArraySchemasMissingItems(schema) {
+  if (!isRecord(schema)) {
+    return schema;
+  }
+  let changed = false;
+  const nextSchema = { ...schema };
+  if (nextSchema.type === "array" && nextSchema.items === void 0) {
+    nextSchema.items = {};
+    changed = true;
+  }
+  const normalizeSchemaValue = (key) => {
+    if (!(key in nextSchema)) {
+      return;
+    }
+    const value = nextSchema[key];
+    if (Array.isArray(value)) {
+      const normalized2 = value.map(normalizeArraySchemasMissingItems);
+      if (normalized2.some((entry, index) => entry !== value[index])) {
+        nextSchema[key] = normalized2;
+        changed = true;
+      }
+      return;
+    }
+    const normalized = normalizeArraySchemasMissingItems(value);
+    if (normalized !== value) {
+      nextSchema[key] = normalized;
+      changed = true;
+    }
+  };
+  for (const key of [
+    "items",
+    "contains",
+    "additionalProperties",
+    "propertyNames",
+    "not",
+    "if",
+    "then",
+    "else"
+  ]) {
+    normalizeSchemaValue(key);
+  }
+  for (const key of ["anyOf", "oneOf", "allOf", "prefixItems"]) {
+    normalizeSchemaValue(key);
+  }
+  for (const key of [
+    "properties",
+    "patternProperties",
+    "dependentSchemas",
+    "$defs",
+    "definitions"
+  ]) {
+    const value = nextSchema[key];
+    if (!isRecord(value)) {
+      continue;
+    }
+    let entriesChanged = false;
+    const normalizedEntries = Object.entries(value).map(
+      ([entryKey, entryValue]) => {
+        const normalizedEntryValue = normalizeArraySchemasMissingItems(entryValue);
+        if (normalizedEntryValue !== entryValue) {
+          entriesChanged = true;
+        }
+        return [entryKey, normalizedEntryValue];
+      }
+    );
+    if (entriesChanged) {
+      nextSchema[key] = Object.fromEntries(normalizedEntries);
+      changed = true;
+    }
+  }
+  return changed ? nextSchema : schema;
+}
+function schemaAllowsArrayType(schema) {
+  const type = schema.type;
+  return type === "array" || Array.isArray(type) && type.includes("array");
+}
+var ARRAY_ITEMS_SCHEMA_OBJECT_KEYS = /* @__PURE__ */ new Set([
+  "additionalProperties",
+  "contains",
+  "else",
+  "if",
+  "items",
+  "not",
+  "propertyNames",
+  "then"
+]);
+var ARRAY_ITEMS_SCHEMA_ARRAY_KEYS = /* @__PURE__ */ new Set(["allOf", "anyOf", "oneOf", "prefixItems"]);
+var ARRAY_ITEMS_SCHEMA_MAP_KEYS = /* @__PURE__ */ new Set([
+  "$defs",
+  "definitions",
+  "dependentSchemas",
+  "patternProperties",
+  "properties"
+]);
+function stripEmptyArrayItemsFromArraySchemas(schema) {
+  if (Array.isArray(schema)) {
+    let changed2 = false;
+    const entries2 = schema.map((entry) => {
+      const next = stripEmptyArrayItemsFromArraySchemas(entry);
+      changed2 ||= next !== entry;
+      return next;
+    });
+    return changed2 ? entries2 : schema;
+  }
+  if (!isRecord(schema)) {
+    return schema;
+  }
+  let changed = false;
+  const entries = Object.entries(schema).flatMap(([key, value]) => {
+    if (key === "items" && schemaAllowsArrayType(schema) && isRecord(value) && isTrulyEmptySchema(value)) {
+      changed = true;
+      return [];
+    }
+    if (ARRAY_ITEMS_SCHEMA_OBJECT_KEYS.has(key)) {
+      const next = stripEmptyArrayItemsFromArraySchemas(value);
+      changed ||= next !== value;
+      return [[key, next]];
+    }
+    if (ARRAY_ITEMS_SCHEMA_ARRAY_KEYS.has(key) && Array.isArray(value)) {
+      const next = stripEmptyArrayItemsFromArraySchemas(value);
+      changed ||= next !== value;
+      return [[key, next]];
+    }
+    if (ARRAY_ITEMS_SCHEMA_MAP_KEYS.has(key) && isRecord(value)) {
+      let mapChanged = false;
+      const next = Object.fromEntries(
+        Object.entries(value).map(([entryKey, entryValue]) => {
+          const entryNext = stripEmptyArrayItemsFromArraySchemas(entryValue);
+          mapChanged ||= entryNext !== entryValue;
+          return [entryKey, entryNext];
+        })
+      );
+      changed ||= mapChanged;
+      return [[key, mapChanged ? next : value]];
+    }
+    return [[key, value]];
+  });
+  return changed ? Object.fromEntries(entries) : schema;
+}
+function copySchemaMeta2(from, to) {
+  for (const key of ["title", "description", "default"]) {
+    if (key in from && from[key] !== void 0) {
+      to[key] = from[key];
+    }
+  }
+}
+function extendSchemaDefs2(defs, schema) {
+  const defsEntry = schema.$defs && typeof schema.$defs === "object" && !Array.isArray(schema.$defs) ? schema.$defs : void 0;
+  const legacyDefsEntry = schema.definitions && typeof schema.definitions === "object" && !Array.isArray(schema.definitions) ? schema.definitions : void 0;
+  if (!defsEntry && !legacyDefsEntry) {
+    return defs;
+  }
+  const next = defs ? {
+    $defs: new Map(defs.$defs),
+    definitions: new Map(defs.definitions)
+  } : {
+    $defs: /* @__PURE__ */ new Map(),
+    definitions: /* @__PURE__ */ new Map()
+  };
+  if (defsEntry) {
+    for (const [key, value] of Object.entries(defsEntry)) {
+      next.$defs.set(key, value);
+    }
+  }
+  if (legacyDefsEntry) {
+    for (const [key, value] of Object.entries(legacyDefsEntry)) {
+      next.definitions.set(key, value);
+    }
+  }
+  return next;
+}
+function decodeJsonPointerSegment2(segment) {
+  return segment.replaceAll("~1", "/").replaceAll("~0", "~");
+}
+function resolveJsonPointerPath(value, segments) {
+  let current = value;
+  for (const segment of segments) {
+    if (!current || typeof current !== "object") {
+      return void 0;
+    }
+    const key = decodeJsonPointerSegment2(segment);
+    if (Array.isArray(current)) {
+      const index = /^(?:0|[1-9]\d*)$/.test(key) ? Number(key) : -1;
+      if (index < 0 || index >= current.length) {
+        return void 0;
+      }
+      current = current[index];
+      continue;
+    }
+    const record = current;
+    if (!Object.hasOwn(record, key)) {
+      return void 0;
+    }
+    current = record[key];
+  }
+  return current;
+}
+function resolveLocalJsonPointer(rootDocument, ref) {
+  if (!ref.startsWith("#/")) {
+    return void 0;
+  }
+  return resolveJsonPointerPath(rootDocument, ref.slice(2).split("/"));
+}
+var SCHEMA_MAP_KEYS = /* @__PURE__ */ new Set([
+  "$defs",
+  "definitions",
+  "dependentSchemas",
+  "patternProperties",
+  "properties"
+]);
+var SCHEMA_OBJECT_KEYS = /* @__PURE__ */ new Set([
+  "additionalProperties",
+  "contains",
+  "else",
+  "if",
+  "items",
+  "not",
+  "propertyNames",
+  "then"
+]);
+var SCHEMA_ARRAY_KEYS = /* @__PURE__ */ new Set(["allOf", "anyOf", "items", "oneOf", "prefixItems"]);
+var SCHEMA_LITERAL_KEYS = /* @__PURE__ */ new Set(["const", "default", "enum", "examples"]);
+function tryResolveLocalRef2(ref, defs, rootDocument) {
+  const match = ref.match(/^#\/(\$defs|definitions)\/([^/]+)(?:\/(.*))?$/);
+  if (match && defs) {
+    const namespace = match[1] === "$defs" ? defs.$defs : defs.definitions;
+    const name = decodeJsonPointerSegment2(match[2] ?? "");
+    const resolved = name ? namespace.get(name) : void 0;
+    if (resolved !== void 0) {
+      const remainingPath = match[3] ? match[3].split("/") : [];
+      return resolveJsonPointerPath(resolved, remainingPath);
+    }
+  }
+  return resolveLocalJsonPointer(rootDocument, ref);
+}
+function inlineLocalSchemaRefsWithDefs(schema, defs, refStack, state, rootDocument) {
+  if (!schema || typeof schema !== "object") {
+    return schema;
+  }
+  if (Array.isArray(schema)) {
+    return schema.map(
+      (entry) => inlineLocalSchemaRefsWithDefs(entry, defs, refStack, state, rootDocument)
+    );
+  }
+  const obj = schema;
+  const nextDefs = extendSchemaDefs2(defs, obj);
+  const refValue = typeof obj.$ref === "string" ? obj.$ref : void 0;
+  if (refValue) {
+    if (refStack?.has(refValue)) {
+      return {};
+    }
+    const resolved = tryResolveLocalRef2(refValue, nextDefs, rootDocument);
+    if (resolved === void 0) {
+      if (refValue.startsWith("#/")) {
+        state.unresolvedLocalRefs = true;
+      }
+      return { ...obj };
+    }
+    const nextRefStack = refStack ? new Set(refStack) : /* @__PURE__ */ new Set();
+    nextRefStack.add(refValue);
+    const inlined = inlineLocalSchemaRefsWithDefs(
+      resolved,
+      nextDefs,
+      nextRefStack,
+      state,
+      rootDocument
+    );
+    if (!inlined || typeof inlined !== "object" || Array.isArray(inlined)) {
+      return inlined;
+    }
+    const result2 = { ...inlined };
+    copySchemaMeta2(obj, result2);
+    if (obj.nullable === true) {
+      result2.nullable = true;
+    }
+    return result2;
+  }
+  const result = {};
+  for (const [key, value] of Object.entries(obj)) {
+    if (key === "$defs" || key === "definitions" || key === "components") {
+      continue;
+    }
+    if (SCHEMA_LITERAL_KEYS.has(key)) {
+      setOwnSchemaProperty(result, key, value);
+      continue;
+    }
+    if (SCHEMA_MAP_KEYS.has(key) && isRecord(value)) {
+      setOwnSchemaProperty(
+        result,
+        key,
+        Object.fromEntries(
+          Object.entries(value).map(([entryKey, entryValue]) => [
+            entryKey,
+            inlineLocalSchemaRefsWithDefs(entryValue, nextDefs, refStack, state, rootDocument)
+          ])
+        )
+      );
+      continue;
+    }
+    if (SCHEMA_OBJECT_KEYS.has(key) && isRecord(value)) {
+      setOwnSchemaProperty(
+        result,
+        key,
+        inlineLocalSchemaRefsWithDefs(value, nextDefs, refStack, state, rootDocument)
+      );
+      continue;
+    }
+    if (SCHEMA_ARRAY_KEYS.has(key) && Array.isArray(value)) {
+      setOwnSchemaProperty(
+        result,
+        key,
+        value.map(
+          (entry) => inlineLocalSchemaRefsWithDefs(entry, nextDefs, refStack, state, rootDocument)
+        )
+      );
+      continue;
+    }
+    setOwnSchemaProperty(result, key, value);
+  }
+  if (state.unresolvedLocalRefs) {
+    if ("$defs" in obj) {
+      result.$defs = obj.$defs;
+    }
+    if ("definitions" in obj) {
+      result.definitions = obj.definitions;
+    }
+    if ("components" in obj) {
+      result.components = obj.components;
+    }
+  }
+  return result;
+}
+function inlineLocalToolSchemaRefs(schema) {
+  if (!schema || typeof schema !== "object") {
+    return schema;
+  }
+  const defs = extendSchemaDefs2(void 0, schema);
+  return inlineLocalSchemaRefsWithDefs(
+    schema,
+    defs,
+    void 0,
+    {
+      unresolvedLocalRefs: false
+    },
+    schema
+  );
+}
+var OPENAPI_SCHEMA_ANNOTATION_KEYS = /* @__PURE__ */ new Set([
+  "discriminator",
+  "externalDocs",
+  "readOnly",
+  "writeOnly",
+  "xml",
+  "example"
+]);
+function appendNullSchemaType(type) {
+  if (type === "null") {
+    return type;
+  }
+  if (typeof type === "string") {
+    return [type, "null"];
+  }
+  if (Array.isArray(type)) {
+    return type.includes("null") ? type : [...type, "null"];
+  }
+  return type;
+}
+function isNullSchemaLike(schema) {
+  if (!isRecord(schema)) {
+    return false;
+  }
+  if (schema.type === "null") {
+    return true;
+  }
+  if (Array.isArray(schema.type) && schema.type.includes("null")) {
+    return true;
+  }
+  if ("const" in schema && schema.const === null) {
+    return true;
+  }
+  return Array.isArray(schema.enum) && schema.enum.includes(null);
+}
+function hasOpenApiComposition(schema) {
+  return ["allOf", "anyOf", "oneOf"].some((key) => Array.isArray(schema[key]));
+}
+function schemaCompositionAlreadyAllowsNull(schema) {
+  return Array.isArray(schema.anyOf) && schema.anyOf.some(isNullSchemaLike) || Array.isArray(schema.oneOf) && schema.oneOf.some(isNullSchemaLike);
+}
+function wrapNullableComposedSchema(schema) {
+  if (schemaCompositionAlreadyAllowsNull(schema)) {
+    return schema;
+  }
+  const wrapped = {
+    anyOf: [schema, { type: "null" }]
+  };
+  copySchemaMeta2(schema, wrapped);
+  return wrapped;
+}
+function normalizeOpenApiSchemaKeywords(schema) {
+  if (Array.isArray(schema)) {
+    let changed2 = false;
+    const normalized2 = schema.map((entry) => {
+      const next = normalizeOpenApiSchemaKeywords(entry);
+      changed2 ||= next !== entry;
+      return next;
+    });
+    return changed2 ? normalized2 : schema;
+  }
+  if (!isRecord(schema)) {
+    return schema;
+  }
+  let changed = false;
+  const nullable = schema.nullable === true;
+  const normalized = {};
+  for (const [key, value] of Object.entries(schema)) {
+    if (key === "nullable" || OPENAPI_SCHEMA_ANNOTATION_KEYS.has(key)) {
+      changed = true;
+      continue;
+    }
+    if (SCHEMA_LITERAL_KEYS.has(key)) {
+      normalized[key] = value;
+      continue;
+    }
+    if (SCHEMA_MAP_KEYS.has(key) && isRecord(value)) {
+      let mapChanged = false;
+      const next = Object.fromEntries(
+        Object.entries(value).map(([entryKey, entryValue]) => {
+          const nextEntry = normalizeOpenApiSchemaKeywords(entryValue);
+          mapChanged ||= nextEntry !== entryValue;
+          return [entryKey, nextEntry];
+        })
+      );
+      normalized[key] = mapChanged ? next : value;
+      changed ||= mapChanged;
+      continue;
+    }
+    if (key === "components") {
+      normalized[key] = value;
+      continue;
+    }
+    if (SCHEMA_OBJECT_KEYS.has(key) && isRecord(value)) {
+      const next = normalizeOpenApiSchemaKeywords(value);
+      normalized[key] = next;
+      changed ||= next !== value;
+      continue;
+    }
+    if (SCHEMA_ARRAY_KEYS.has(key) && Array.isArray(value)) {
+      const next = value.map(normalizeOpenApiSchemaKeywords);
+      normalized[key] = next;
+      changed ||= next.some((entry, index) => entry !== value[index]);
+      continue;
+    }
+    normalized[key] = value;
+  }
+  if (nullable) {
+    if (hasOpenApiComposition(normalized)) {
+      return wrapNullableComposedSchema(normalized);
+    }
+    if ("type" in normalized) {
+      const nextType = appendNullSchemaType(normalized.type);
+      if (nextType !== normalized.type) {
+        normalized.type = nextType;
+      }
+    }
+    if (Array.isArray(normalized.enum) && !normalized.enum.includes(null)) {
+      normalized.enum = [...normalized.enum, null];
+    }
+  }
+  return changed || nullable ? normalized : schema;
+}
+function normalizeToolParameterSchemaUncached(schema, options) {
+  const inlinedSchema = normalizeOpenApiSchemaKeywords(inlineLocalToolSchemaRefs(schema));
+  const schemaRecord = inlinedSchema && typeof inlinedSchema === "object" ? inlinedSchema : void 0;
+  if (!schemaRecord) {
+    return inlinedSchema;
+  }
+  const normalizedProvider = normalizeLowercaseStringOrEmpty(options?.modelProvider);
+  const normalizedModelId = normalizeLowercaseStringOrEmpty(options?.modelId);
+  const normalizedToolSchemaProfile = normalizeLowercaseStringOrEmpty(
+    options?.modelCompat?.toolSchemaProfile
+  );
+  const isGeminiProvider = normalizedProvider.includes("google") || normalizedProvider.includes("gemini") || isGeminiModelId(normalizedModelId) || normalizedToolSchemaProfile === "gemini";
+  const isAnthropicProvider = normalizedProvider.includes("anthropic");
+  const unsupportedToolSchemaKeywords = resolveUnsupportedToolSchemaKeywords(options?.modelCompat);
+  const omitEmptyArrayItems = shouldOmitEmptyArrayItems(options?.modelCompat);
+  function applyProviderCleaning(s) {
+    const normalizedSchema = normalizeArraySchemasMissingItems(s);
+    const arrayItemsCompatibleSchema = omitEmptyArrayItems ? stripEmptyArrayItemsFromArraySchemas(normalizedSchema) : normalizedSchema;
+    if (isGeminiProvider && !isAnthropicProvider) {
+      const geminiCompatibleSchema = cleanSchemaForGemini(arrayItemsCompatibleSchema);
+      return unsupportedToolSchemaKeywords.size > 0 ? stripUnsupportedSchemaKeywords(
+        geminiCompatibleSchema,
+        unsupportedToolSchemaKeywords
+      ) : geminiCompatibleSchema;
+    }
+    if (unsupportedToolSchemaKeywords.size > 0) {
+      return stripUnsupportedSchemaKeywords(
+        arrayItemsCompatibleSchema,
+        unsupportedToolSchemaKeywords
+      );
+    }
+    return arrayItemsCompatibleSchema;
+  }
+  const conditionalKey = getTopLevelConditionalKey(schemaRecord);
+  const flattenableVariantKey = getFlattenableVariantKey(schemaRecord);
+  if (hasTopLevelObjectSchema(schemaRecord, conditionalKey)) {
+    return applyProviderCleaning(schemaRecord);
+  }
+  if (isObjectLikeSchemaMissingType(schemaRecord, conditionalKey)) {
+    return applyProviderCleaning({
+      ...schemaRecord,
+      type: "object",
+      properties: isRecord(schemaRecord.properties) ? schemaRecord.properties : {}
+    });
+  }
+  if (isTypedObjectSchemaMissingValidProperties(schemaRecord, conditionalKey)) {
+    return applyProviderCleaning({ ...schemaRecord, properties: {} });
+  }
+  if (!flattenableVariantKey) {
+    if (isTrulyEmptySchema(schemaRecord)) {
+      return applyProviderCleaning({ type: "object", properties: {} });
+    }
+    if (conditionalKey === "allOf") {
+      return applyProviderCleaning(inlinedSchema);
+    }
+    return applyProviderCleaning(inlinedSchema);
+  }
+  const variants = schemaRecord[flattenableVariantKey];
+  const mergedProperties = {};
+  const requiredCounts = /* @__PURE__ */ new Map();
+  let objectVariants = 0;
+  for (const entry of variants) {
+    if (!entry || typeof entry !== "object") {
+      continue;
+    }
+    const props = entry.properties;
+    if (!props || typeof props !== "object") {
+      continue;
+    }
+    objectVariants += 1;
+    for (const [key, value] of Object.entries(props)) {
+      if (!(key in mergedProperties)) {
+        mergedProperties[key] = value;
+        continue;
+      }
+      mergedProperties[key] = mergePropertySchemas(mergedProperties[key], value);
+    }
+    const required = Array.isArray(entry.required) ? entry.required : [];
+    for (const key of required) {
+      if (typeof key !== "string") {
+        continue;
+      }
+      requiredCounts.set(key, (requiredCounts.get(key) ?? 0) + 1);
+    }
+  }
+  const baseRequired = Array.isArray(schemaRecord.required) ? schemaRecord.required.filter((key) => typeof key === "string") : void 0;
+  const mergedRequired = baseRequired && baseRequired.length > 0 ? baseRequired : objectVariants > 0 ? Array.from(requiredCounts.entries()).filter(([, count]) => count === objectVariants).map(([key]) => key) : void 0;
+  const nextSchema = { ...schemaRecord };
+  const flattenedSchema = {
+    type: "object",
+    ...typeof nextSchema.title === "string" ? { title: nextSchema.title } : {},
+    ...typeof nextSchema.description === "string" ? { description: nextSchema.description } : {},
+    properties: Object.keys(mergedProperties).length > 0 ? mergedProperties : schemaRecord.properties ?? {},
+    ...mergedRequired && mergedRequired.length > 0 ? { required: mergedRequired } : {},
+    additionalProperties: "additionalProperties" in schemaRecord ? schemaRecord.additionalProperties : true
+  };
+  return applyProviderCleaning(flattenedSchema);
+}
+function normalizeToolParameterSchema(schema, options) {
+  if (!schema || typeof schema !== "object") {
+    return normalizeToolParameterSchemaUncached(schema, options);
+  }
+  const cacheKey = resolveToolParameterSchemaCacheKey(options);
+  const cached = getCachedToolParameterSchema(schema, cacheKey);
+  if (cached) {
+    return cached;
+  }
+  return rememberCachedToolParameterSchema(
+    schema,
+    cacheKey,
+    normalizeToolParameterSchemaUncached(schema, options)
+  );
+}
+
+// packages/ai/src/providers/openai-tool-schema-compat.ts
+var OPENAI_STRICT_COMPAT_SCHEMA_MAP_KEYS = /* @__PURE__ */ new Set([
+  "$defs",
+  "definitions",
+  "dependentSchemas",
+  // Draft-07 dependencies mix schema values with property-name arrays. The
+  // recursive helpers leave scalar array entries untouched.
+  "dependencies",
+  "patternProperties",
+  "properties"
+]);
+var OPENAI_STRICT_COMPAT_SCHEMA_NESTED_KEYS = /* @__PURE__ */ new Set([
+  "additionalItems",
+  "additionalProperties",
+  "allOf",
+  "anyOf",
+  "contains",
+  "contentSchema",
+  "else",
+  "if",
+  "items",
+  "not",
+  "oneOf",
+  "prefixItems",
+  "propertyNames",
+  "then",
+  "unevaluatedItems",
+  "unevaluatedProperties"
+]);
+function findOpenAIStrictSchemaViolations(schema, path, options) {
+  if (Array.isArray(schema)) {
+    if (options?.requireObjectRoot) {
+      return [`${path}.type`];
+    }
+    return schema.flatMap(
+      (item, index) => findOpenAIStrictSchemaViolations(item, `${path}[${index}]`)
+    );
+  }
+  if (!schema || typeof schema !== "object") {
+    return options?.requireObjectRoot ? [`${path}.type`] : [];
+  }
+  const record = schema;
+  const violations = [];
+  for (const key of ["anyOf", "oneOf", "allOf"]) {
+    if (key in record) {
+      violations.push(`${path}.${key}`);
+    }
+  }
+  if (Array.isArray(record.type)) {
+    violations.push(`${path}.type`);
+  }
+  const properties = record.properties && typeof record.properties === "object" && !Array.isArray(record.properties) ? record.properties : void 0;
+  if (record.type === "object") {
+    if (record.additionalProperties !== false) {
+      violations.push(`${path}.additionalProperties`);
+    }
+    const required = Array.isArray(record.required) ? record.required.filter((entry) => typeof entry === "string") : void 0;
+    if (!required) {
+      violations.push(`${path}.required`);
+    } else if (properties) {
+      const requiredSet = new Set(required);
+      for (const key of Object.keys(properties)) {
+        if (!requiredSet.has(key)) {
+          violations.push(`${path}.required.${key}`);
+        }
+      }
+    }
+  }
+  for (const key of OPENAI_STRICT_COMPAT_SCHEMA_MAP_KEYS) {
+    const schemaMap = record[key];
+    if (!schemaMap || typeof schemaMap !== "object" || Array.isArray(schemaMap)) {
+      continue;
+    }
+    for (const [entryKey, value] of Object.entries(schemaMap)) {
+      violations.push(...findOpenAIStrictSchemaViolations(value, `${path}.${key}.${entryKey}`));
+    }
+  }
+  for (const key of OPENAI_STRICT_COMPAT_SCHEMA_NESTED_KEYS) {
+    const value = record[key];
+    if (value && typeof value === "object") {
+      violations.push(...findOpenAIStrictSchemaViolations(value, `${path}.${key}`));
+    }
+  }
+  return violations;
+}
+
+// packages/ai/src/providers/openai-tool-schema.ts
+var MAX_STRICT_SCHEMA_CACHE_ENTRIES_PER_SCHEMA = 8;
+var strictOpenAISchemaCache = /* @__PURE__ */ new WeakMap();
+function resolveToolSchemaModelCompat(compat) {
+  if (!compat) {
+    return void 0;
+  }
+  const unsupportedToolSchemaKeywords = Array.isArray(compat.unsupportedToolSchemaKeywords) ? compat.unsupportedToolSchemaKeywords.filter(
+    (keyword) => typeof keyword === "string"
+  ) : [];
+  if (unsupportedToolSchemaKeywords.length === 0 && compat.omitEmptyArrayItems !== true) {
+    return void 0;
+  }
+  return {
+    ...unsupportedToolSchemaKeywords.length > 0 ? { unsupportedToolSchemaKeywords } : {},
+    ...compat.omitEmptyArrayItems === true ? { omitEmptyArrayItems: true } : {}
+  };
+}
+function resolveStrictOpenAISchemaCacheKey(modelCompat) {
+  const compat = resolveToolSchemaModelCompat(modelCompat);
+  return JSON.stringify([
+    [...compat?.unsupportedToolSchemaKeywords ?? []].toSorted(),
+    shouldOmitEmptyArrayItems(compat)
+  ]);
+}
+function readCachedStrictOpenAISchema(schema, key) {
+  return strictOpenAISchemaCache.get(schema)?.find((entry) => entry.key === key)?.value;
+}
+function rememberStrictOpenAISchema(schema, key, value) {
+  const entries = strictOpenAISchemaCache.get(schema) ?? [];
+  strictOpenAISchemaCache.set(
+    schema,
+    [{ key, value }, ...entries.filter((entry) => entry.key !== key)].slice(
+      0,
+      MAX_STRICT_SCHEMA_CACHE_ENTRIES_PER_SCHEMA
+    )
+  );
+  return value;
+}
+function normalizeStrictOpenAIJsonSchema(schema, modelCompat) {
+  const schemaInput = schema ?? {};
+  if (!schemaInput || typeof schemaInput !== "object") {
+    return normalizeStrictOpenAIJsonSchemaRecursive(
+      normalizeToolParameterSchema(schemaInput, {
+        modelCompat: resolveToolSchemaModelCompat(modelCompat)
+      }),
+      0
+    );
+  }
+  const cacheKey = resolveStrictOpenAISchemaCacheKey(modelCompat);
+  const cached = readCachedStrictOpenAISchema(schemaInput, cacheKey);
+  if (cached !== void 0) {
+    return cached;
+  }
+  return rememberStrictOpenAISchema(
+    schemaInput,
+    cacheKey,
+    // Cache by input object and compatibility key so repeated inventory generation preserves object
+    // identity without mixing schemas normalized for different provider limitations.
+    normalizeStrictOpenAIJsonSchemaRecursive(
+      normalizeToolParameterSchema(schemaInput, {
+        modelCompat: resolveToolSchemaModelCompat(modelCompat)
+      }),
+      0
+    )
+  );
+}
+function normalizeStrictOpenAIJsonSchemaRecursive(schema, depth) {
+  if (Array.isArray(schema)) {
+    let changed2 = false;
+    const normalized2 = schema.map((entry) => {
+      const next = normalizeStrictOpenAIJsonSchemaRecursive(entry, depth);
+      changed2 ||= next !== entry;
+      return next;
+    });
+    return changed2 ? normalized2 : schema;
+  }
+  if (!schema || typeof schema !== "object") {
+    return schema;
+  }
+  const record = schema;
+  let changed = false;
+  const normalized = {};
+  for (const [key, value] of Object.entries(record)) {
+    const next = normalizeStrictOpenAIJsonSchemaRecursive(
+      value,
+      key === "properties" ? depth : depth + 1
+    );
+    normalized[key] = next;
+    changed ||= next !== value;
+  }
+  if (normalized.type === "object") {
+    const properties = normalized.properties && typeof normalized.properties === "object" && !Array.isArray(normalized.properties) ? normalized.properties : void 0;
+    if (properties && Object.keys(properties).length === 0 && !Array.isArray(normalized.required)) {
+      normalized.required = [];
+      changed = true;
+    }
+    if (depth === 0 && !("additionalProperties" in normalized)) {
+      normalized.additionalProperties = false;
+      changed = true;
+    }
+  }
+  return changed ? normalized : schema;
+}
+function normalizeOpenAIStrictToolParameters(schema, strict, modelCompat) {
+  const toolSchemaCompat = resolveToolSchemaModelCompat(modelCompat);
+  if (!strict) {
+    return normalizeToolParameterSchema(schema ?? {}, { modelCompat: toolSchemaCompat });
+  }
+  return normalizeStrictOpenAIJsonSchema(schema, toolSchemaCompat);
+}
+function isStrictOpenAIJsonSchemaCompatible(schema) {
+  return isStrictOpenAIJsonSchemaCompatibleRecursive(normalizeStrictOpenAIJsonSchema(schema));
+}
+function findOpenAIStrictToolProjectionDiagnostics(projection) {
+  return [
+    ...projection.diagnostics.map((diagnostic) => ({
+      toolIndex: diagnostic.toolIndex,
+      ...diagnostic.toolName ? { toolName: diagnostic.toolName } : {},
+      violations: [...diagnostic.violations]
+    })),
+    ...projection.tools.flatMap((tool) => {
+      const violations = findOpenAIStrictSchemaViolations(
+        normalizeStrictOpenAIJsonSchema(tool.parameters),
+        `${tool.name}.parameters`
+      );
+      return violations.length > 0 ? [{ toolIndex: tool.toolIndex, toolName: tool.name, violations }] : [];
+    })
+  ];
+}
+function isStrictOpenAIJsonSchemaCompatibleRecursive(schema) {
+  if (Array.isArray(schema)) {
+    return schema.every((entry) => isStrictOpenAIJsonSchemaCompatibleRecursive(entry));
+  }
+  if (!schema || typeof schema !== "object") {
+    return true;
+  }
+  const record = schema;
+  if ("anyOf" in record || "oneOf" in record || "allOf" in record) {
+    return false;
+  }
+  if (Array.isArray(record.type)) {
+    return false;
+  }
+  if (record.type === "object" && record.additionalProperties !== false) {
+    return false;
+  }
+  if (record.type === "object") {
+    const properties = record.properties && typeof record.properties === "object" && !Array.isArray(record.properties) ? record.properties : {};
+    const required = Array.isArray(record.required) ? record.required.filter((entry) => typeof entry === "string") : void 0;
+    if (!required) {
+      return false;
+    }
+    const requiredSet = new Set(required);
+    if (Object.keys(properties).some((key) => !requiredSet.has(key))) {
+      return false;
+    }
+  }
+  return Object.entries(record).every(([key, entry]) => {
+    if (key === "properties" && entry && typeof entry === "object" && !Array.isArray(entry)) {
+      return Object.values(entry).every(
+        (value) => isStrictOpenAIJsonSchemaCompatibleRecursive(value)
+      );
+    }
+    return isStrictOpenAIJsonSchemaCompatibleRecursive(entry);
+  });
+}
+function resolveOpenAIProjectedToolsStrictToolFlag(projection, strict) {
+  if (strict !== true) {
+    return strict === false ? false : void 0;
+  }
+  return projection.tools.every((tool) => isStrictOpenAIJsonSchemaCompatible(tool.parameters));
+}
+
+// packages/ai/src/providers/openai-responses-tools.ts
+var LOG_SUBSYSTEM = "llm/openai-responses";
+var MAX_STRICT_TOOL_DOWNGRADE_DIAGNOSTIC_KEYS = 64;
+var loggedStrictToolDowngradeDiagnosticKeys = /* @__PURE__ */ new Set();
+function convertResponsesToolPayload(tools, options) {
+  const projection = projectOpenAITools(tools);
+  const strictSetting = resolveResponsesStrictToolSetting(options);
+  const strict = resolveResponsesStrictToolFlag(projection, strictSetting, options?.model);
+  const convertedTools = sortResponsesToolsByName(projection.tools).map((tool) => {
+    const result = {
+      type: "function",
+      name: tool.name,
+      description: tool.description,
+      parameters: normalizeOpenAIStrictToolParameters(
+        tool.parameters,
+        strict === true,
+        options?.model?.compat
+      )
+    };
+    if (strict !== void 0) {
+      result.strict = strict;
+    }
+    return result;
+  });
+  return { projection, tools: convertedTools };
+}
+function resolveResponsesStrictToolSetting(options) {
+  if (options?.strict !== void 0) {
+    return options.strict;
+  }
+  if (options?.model) {
+    return getAiTransportHost().resolveOpenAIStrictToolSetting(options.model, {
+      transport: "stream",
+      supportsStrictMode: options.supportsStrictMode
+    });
+  }
+  return false;
+}
+function resolveResponsesStrictToolFlag(projection, strictSetting, model) {
+  const strict = resolveOpenAIProjectedToolsStrictToolFlag(projection, strictSetting);
+  if (strictSetting === true && strict === false && model) {
+    getAiTransportHost().logDebug(LOG_SUBSYSTEM, () => {
+      const diagnostics = findOpenAIStrictToolProjectionDiagnostics(projection);
+      if (!shouldLogStrictToolDowngradeDiagnostic(diagnostics, model)) {
+        return null;
+      }
+      const sample = diagnostics.slice(0, 5).map((entry) => ({
+        tool: entry.toolName ?? `tool[${entry.toolIndex}]`,
+        violations: entry.violations.slice(0, 8)
+      }));
+      return {
+        message: `OpenAI responses tool schema strict mode downgraded to strict=false for ${model.provider ?? "unknown"}/${model.id ?? "unknown"} because ${diagnostics.length} tool schema(s) are not strict-compatible`,
+        data: {
+          provider: model.provider,
+          model: model.id,
+          incompatibleToolCount: diagnostics.length,
+          sample
+        }
+      };
+    });
+  }
+  return strict;
+}
+function shouldLogStrictToolDowngradeDiagnostic(diagnostics, model) {
+  const key = createHash("sha256").update(
+    JSON.stringify({
+      provider: model.provider,
+      model: model.id,
+      diagnostics: diagnostics.map((entry) => ({
+        toolIndex: entry.toolIndex,
+        toolName: entry.toolName ?? null,
+        violations: entry.violations
+      }))
+    })
+  ).digest("hex");
+  if (loggedStrictToolDowngradeDiagnosticKeys.has(key)) {
+    return false;
+  }
+  if (loggedStrictToolDowngradeDiagnosticKeys.size >= MAX_STRICT_TOOL_DOWNGRADE_DIAGNOSTIC_KEYS) {
+    loggedStrictToolDowngradeDiagnosticKeys.clear();
+  }
+  loggedStrictToolDowngradeDiagnosticKeys.add(key);
+  return true;
+}
+function compareToolText(left, right) {
+  const leftText = left ?? "";
+  const rightText = right ?? "";
+  if (leftText < rightText) {
+    return -1;
+  }
+  if (leftText > rightText) {
+    return 1;
+  }
+  return 0;
+}
+function sortResponsesToolsByName(tools) {
+  return tools.toSorted(
+    (left, right) => compareToolText(left.name, right.name) || compareToolText(left.description, right.description)
+  );
+}
+export {
+  convertResponsesToolPayload
+};

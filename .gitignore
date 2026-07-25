@@ -1,0 +1,9 @@
+node_modules/
+dist/
+vendor.tgz
+.env
+*.env
+!.env.template
+*.log
+.openclaw/
+scratch/
