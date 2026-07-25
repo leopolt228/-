@@ -48,6 +48,12 @@ cat << EOF > /root/.openclaw/openclaw.json
 }
 EOF
 
+# Create start.js launcher with hardcoded gateway run arguments
+cat << 'EOF' > /root/openclaw/start.js
+process.argv = [process.argv[0], process.argv[1], "gateway", "run", "--allow-unconfigured"];
+import("./dist/entry.js");
+EOF
+
 # Copy templates into src/agents/templates
 mkdir -p /root/openclaw/src/agents/templates
 cp -r /root/openclaw/docs/reference/templates/* /root/openclaw/src/agents/templates/ 2>/dev/null || true
@@ -65,9 +71,9 @@ find /root/openclaw/node_modules -type f -name "*.mjs" | while read f; do cp "$f
 pm2 kill 2>/dev/null || true
 rm -f /root/.pm2/dump.pm2 2>/dev/null || true
 
-pm2 start openclaw.mjs --name openclaw --cwd /root/openclaw --env TELEGRAM_BOT_TOKEN="8754163681:AAE1FLnikHL0Mlr2VrtPoVbaiMea-LQiWkw" --env GEMINI_API_KEY="${KEY}" --env GOOGLE_API_KEY="${KEY}" --env OPENCLAW_CONFIG_PATH="/root/.openclaw/openclaw.json" -- gateway run --allow-unconfigured
+pm2 start /root/openclaw/start.js --name openclaw --cwd /root/openclaw --env TELEGRAM_BOT_TOKEN="8754163681:AAE1FLnikHL0Mlr2VrtPoVbaiMea-LQiWkw" --env GEMINI_API_KEY="${KEY}" --env GOOGLE_API_KEY="${KEY}" --env OPENCLAW_CONFIG_PATH="/root/.openclaw/openclaw.json"
 pm2 save
 
 echo "=========================================="
-echo "FIX COMPLETE! OPENCLAW IS RUNNING DIRECTLY WITH NODE 24!"
+echo "FIX COMPLETE! OPENCLAW IS RUNNING VIA START.JS!"
 echo "=========================================="
