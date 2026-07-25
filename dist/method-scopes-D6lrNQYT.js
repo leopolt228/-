@@ -1,0 +1,3 @@
+import { a as isGatewayMethodClassified, i as isApprovalMethod, n as authorizeOperatorScopesForMethod, o as isNodeRoleMethod, r as authorizeOperatorScopesForRequiredScope, s as resolveLeastPrivilegeOperatorScopesForMethod, t as CLI_DEFAULT_OPERATOR_SCOPES } from "./method-scopes-DN3UnWnt.js";
+import { a as READ_SCOPE, i as QUESTIONS_SCOPE, n as APPROVALS_SCOPE, r as PAIRING_SCOPE, s as WRITE_SCOPE, t as ADMIN_SCOPE } from "./operator-scopes-BHrNTqoH.js";
+export { ADMIN_SCOPE, APPROVALS_SCOPE, CLI_DEFAULT_OPERATOR_SCOPES, PAIRING_SCOPE, QUESTIONS_SCOPE, READ_SCOPE, WRITE_SCOPE, authorizeOperatorScopesForMethod, authorizeOperatorScopesForRequiredScope, isApprovalMethod, isGatewayMethodClassified, isNodeRoleMethod, resolveLeastPrivilegeOperatorScopesForMethod };

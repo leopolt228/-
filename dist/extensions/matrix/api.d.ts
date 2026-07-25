@@ -1,0 +1,10 @@
+import { t as matrixPlugin } from "../../channel-CJS_vTyU.js";
+import { n as createMatrixSetupWizardProxy, r as matrixSetupAdapter, t as matrixOnboardingAdapter } from "../../setup-surface-C9MDZ7if.js";
+import { a as resolveMatrixCredentialsPath, c as getMatrixScopedEnvVarNames, d as findMatrixAccountEntry, f as requiresExplicitMatrixDefaultAccount, h as resolveMatrixDefaultOrOnlyAccountId, i as resolveMatrixCredentialsFilename, l as listMatrixEnvAccountIds, m as resolveMatrixChannelConfig, n as resolveMatrixAccountStorageRoot, o as resolveMatrixHomeserverKey, p as resolveConfiguredMatrixAccountIds, r as resolveMatrixCredentialsDir, s as sanitizeMatrixPathSegment, t as hashMatrixAccessToken, u as resolveMatrixEnvAccountToken } from "../../storage-paths-CYjLkRzb.js";
+import { t as createMatrixThreadBindingManager } from "../../thread-bindings-C9MLme12.js";
+import { a as setMatrixThreadBindingMaxAgeBySessionKey, i as setMatrixThreadBindingIdleTimeoutBySessionKey, n as getMatrixThreadBindingManager, r as resetMatrixThreadBindingsForTests } from "../../thread-bindings-shared-CDIxJmTd.js";
+
+//#region extensions/matrix/api.d.ts
+declare const matrixSessionBindingAdapterChannels: readonly ["matrix"];
+//#endregion
+export { createMatrixSetupWizardProxy, createMatrixThreadBindingManager, findMatrixAccountEntry, getMatrixScopedEnvVarNames, getMatrixThreadBindingManager, hashMatrixAccessToken, listMatrixEnvAccountIds, matrixOnboardingAdapter, matrixOnboardingAdapter as matrixSetupWizard, matrixPlugin, matrixSessionBindingAdapterChannels, matrixSetupAdapter, requiresExplicitMatrixDefaultAccount, resetMatrixThreadBindingsForTests, resolveConfiguredMatrixAccountIds, resolveMatrixAccountStorageRoot, resolveMatrixChannelConfig, resolveMatrixCredentialsDir, resolveMatrixCredentialsFilename, resolveMatrixCredentialsPath, resolveMatrixDefaultOrOnlyAccountId, resolveMatrixEnvAccountToken, resolveMatrixHomeserverKey, sanitizeMatrixPathSegment, setMatrixThreadBindingIdleTimeoutBySessionKey, setMatrixThreadBindingMaxAgeBySessionKey };

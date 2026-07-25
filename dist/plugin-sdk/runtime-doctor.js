@@ -1,0 +1,7 @@
+import { s as repairOpenClawStateDatabaseSchema, u as detectOpenClawStateDatabaseSchemaMigrations } from "../openclaw-state-db-DkOMT2fb.js";
+import { r as normalizeLegacyDmAliases } from "../dm-access-Bq5cULcy.js";
+import { r as createPluginStateSyncKeyedStore } from "../plugin-state-store-DtRrl2QK.js";
+import { t as collectProviderDangerousNameMatchingScopes } from "../dangerous-name-matching-Z6nhxFXz.js";
+import { a as defineChannelAliasMigration, c as hasLegacyStreamingAliases, d as resolveLegacyAliasStreamingMode, i as formatPluginInstallPathIssue, l as normalizeLegacyChannelAliases, n as legacyStateFileExists, o as asObjectRecord, r as detectPluginInstallPathIssue, s as hasLegacyAccountStreamingAliases, t as archiveLegacyStateSource, u as normalizeLegacyStreamingAliases } from "../runtime-doctor-NsZSUIhr.js";
+import { o as removePluginFromConfig } from "../uninstall-BdpaspPy.js";
+export { archiveLegacyStateSource, asObjectRecord, collectProviderDangerousNameMatchingScopes, createPluginStateSyncKeyedStore, defineChannelAliasMigration, detectOpenClawStateDatabaseSchemaMigrations, detectPluginInstallPathIssue, formatPluginInstallPathIssue, hasLegacyAccountStreamingAliases, hasLegacyStreamingAliases, legacyStateFileExists, normalizeLegacyChannelAliases, normalizeLegacyDmAliases, normalizeLegacyStreamingAliases, removePluginFromConfig, repairOpenClawStateDatabaseSchema, resolveLegacyAliasStreamingMode };

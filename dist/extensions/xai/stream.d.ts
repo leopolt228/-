@@ -1,0 +1,7 @@
+import { y as StreamFn } from "../../types-Dedz4oTJ.js";
+import { dn as ProviderWrapStreamFnContext } from "../../plugin-entry-Bj-pdgAt.js";
+
+//#region extensions/xai/stream.d.ts
+declare function wrapXaiProviderStream(ctx: ProviderWrapStreamFnContext): StreamFn | undefined;
+//#endregion
+export { wrapXaiProviderStream };

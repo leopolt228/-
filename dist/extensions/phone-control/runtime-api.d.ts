@@ -1,0 +1,2 @@
+import { B as PluginCommandContext, _ as OpenClawPluginCommandDefinition, g as OpenClawPluginApi, j as OpenClawPluginService, wn as definePluginEntry } from "../../plugin-entry-Bj-pdgAt.js";
+export { type OpenClawPluginApi, type OpenClawPluginCommandDefinition, type OpenClawPluginService, type PluginCommandContext, definePluginEntry };

@@ -1,0 +1,2 @@
+import{n as e}from"./rolldown-runtime-DaJ6WEGw.js";function t(e){if(e.reason===`manual`)return`fetch`;if(!e.visible)return`defer`;if(e.interrupted)return`fetch`;let t=e.ttlMs??3e5;return e.lastLoadedAtMs!==null&&e.nowMs-e.lastLoadedAtMs<t?`skip`:`fetch`}var n,r=e((()=>{n=5*6e4}));export{t as n,r,n as t};
+//# sourceMappingURL=refresh-policy-CVMdOh-W.js.map

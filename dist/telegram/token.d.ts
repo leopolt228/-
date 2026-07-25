@@ -1,0 +1,2 @@
+import { n as resolveTelegramBotUserIdFromToken, r as resolveTelegramToken, t as TelegramTokenResolution } from "../token-pYPVC0d1.js";
+export { TelegramTokenResolution, resolveTelegramBotUserIdFromToken, resolveTelegramToken };

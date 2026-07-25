@@ -1,0 +1,3 @@
+import { Nr as DispatchReplyWithBufferedBlockDispatcher, Pr as DispatchReplyWithDispatcher } from "./types-Bi5Leigi.js";
+import { n as dispatchReplyWithDispatcher, t as dispatchReplyWithBufferedBlockDispatcher } from "./provider-dispatcher-wlJXMhpr.js";
+export { type DispatchReplyWithBufferedBlockDispatcher, type DispatchReplyWithDispatcher, dispatchReplyWithBufferedBlockDispatcher, dispatchReplyWithDispatcher };

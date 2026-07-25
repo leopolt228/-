@@ -1,0 +1,3 @@
+import { n as resolveIMessageAttachmentRoots, r as resolveIMessageRemoteAttachmentRoots, t as DEFAULT_IMESSAGE_ATTACHMENT_ROOTS } from "../../media-contract-DKC1NNgZ.js";
+import "../../media-contract-api-Bm5ueOr9.js";
+export { DEFAULT_IMESSAGE_ATTACHMENT_ROOTS, resolveIMessageAttachmentRoots, resolveIMessageAttachmentRoots as resolveInboundAttachmentRoots, resolveIMessageRemoteAttachmentRoots, resolveIMessageRemoteAttachmentRoots as resolveRemoteInboundAttachmentRoots };

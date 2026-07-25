@@ -1,0 +1,2 @@
+import { r as resetTelegramThreadBindingsForTests, t as createTelegramThreadBindingManager } from "../../thread-bindings-DC-jn_hk.js";
+export { createTelegramThreadBindingManager, resetTelegramThreadBindingsForTests };

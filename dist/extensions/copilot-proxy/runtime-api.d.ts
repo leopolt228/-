@@ -1,0 +1,2 @@
+import { St as ProviderAuthResult, g as OpenClawPluginApi, vt as ProviderAuthContext, wn as definePluginEntry } from "../../plugin-entry-Bj-pdgAt.js";
+export { type OpenClawPluginApi, type ProviderAuthContext, type ProviderAuthResult, definePluginEntry };

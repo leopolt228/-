@@ -1,0 +1,2 @@
+import { a as hasClaudeSource, i as discoverClaudeSource, n as CLAUDE_AUTO_MEMORY_MAX_SCAN_ENTRIES, r as ClaudeSource, t as CLAUDE_AUTO_MEMORY_MAX_FILES } from "../../source-DXdpyJJu.js";
+export { CLAUDE_AUTO_MEMORY_MAX_FILES, CLAUDE_AUTO_MEMORY_MAX_SCAN_ENTRIES, ClaudeSource, discoverClaudeSource, hasClaudeSource };
