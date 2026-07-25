@@ -48,42 +48,34 @@ cat << EOF > /root/.openclaw/openclaw.json
 }
 EOF
 
-# Create run.sh executable script
-cat << EOF > /root/openclaw/run.sh
-#!/bin/bash
-cd /root/openclaw || exit 1
-export OPENCLAW_DISABLE_CLI_STARTUP_HELP_FAST_PATH="1"
-export OPENCLAW_STATE_DIR="/root/.openclaw"
-export OPENCLAW_CONFIG_PATH="/root/.openclaw/openclaw.json"
-export TELEGRAM_BOT_TOKEN="8754163681:AAE1FLnikHL0Mlr2VrtPoVbaiMea-LQiWkw"
-export GEMINI_API_KEY="${KEY}"
-export GOOGLE_API_KEY="${KEY}"
-export ALLOW_FROM="*"
-exec node openclaw.mjs gateway run --allow-unconfigured
-EOF
-
-chmod +x /root/openclaw/run.sh
-
 # Copy templates into src/agents/templates
 mkdir -p /root/openclaw/src/agents/templates
 cp -r /root/openclaw/docs/reference/templates/* /root/openclaw/src/agents/templates/ 2>/dev/null || true
 
-# 1. Duplicate all .mjs to .js in packages first
-find /root/openclaw/packages -type f -name "*.mjs" | while read f; do cp "$f" "${f%.mjs}.js"; done 2>/dev/null || true
-
-# 2. Copy packages to node_modules/@openclaw
+# Copy packages into node_modules/@openclaw
 mkdir -p /root/openclaw/node_modules/@openclaw
 cp -r /root/openclaw/packages/* /root/openclaw/node_modules/@openclaw/ 2>/dev/null || true
 
-# 3. Duplicate all .mjs to .js in node_modules
-find /root/openclaw/node_modules -type f -name "*.mjs" | while read f; do cp "$f" "${f%.mjs}.js"; done 2>/dev/null || true
+# Python script to convert all .mjs to .js everywhere recursively
+python3 -c '
+import os, shutil
+for root, dirs, files in os.walk("/root/openclaw"):
+    for f in files:
+        if f.endswith(".mjs"):
+            src = os.path.join(root, f)
+            dst = os.path.join(root, f[:-4] + ".js")
+            try:
+                shutil.copy2(src, dst)
+            except Exception:
+                pass
+'
 
 pm2 kill 2>/dev/null || true
 rm -f /root/.pm2/dump.pm2 2>/dev/null || true
 
-pm2 start /root/openclaw/run.sh --name openclaw
+pm2 start /root/openclaw/openclaw.mjs --name openclaw --cwd /root/openclaw --env TELEGRAM_BOT_TOKEN="8754163681:AAE1FLnikHL0Mlr2VrtPoVbaiMea-LQiWkw" --env GEMINI_API_KEY="${KEY}" --env GOOGLE_API_KEY="${KEY}" --env OPENCLAW_CONFIG_PATH="/root/.openclaw/openclaw.json" -- gateway run --allow-unconfigured
 pm2 save
 
 echo "=========================================="
-echo "FIX COMPLETE! OPENCLAW IS RUNNING VIA RUN.SH!"
+echo "FIX COMPLETE! OPENCLAW IS RUNNING VIA PYTHON MJS COPY!"
 echo "=========================================="
