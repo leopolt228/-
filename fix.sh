@@ -76,7 +76,7 @@ for root, dirs, files in os.walk("/root/openclaw"):
                 pass
 '
 
-# Create start_gateway.sh
+# Create start_gateway.sh with debug logging
 cat << EOF > /root/openclaw/start_gateway.sh
 #!/bin/bash
 export TELEGRAM_BOT_TOKEN="8754163681:AAE1FLnikHL0Mlr2VrtPoVbaiMea-LQiWkw"
@@ -86,17 +86,23 @@ export OPENCLAW_CONFIG_PATH="/root/.openclaw/openclaw.json"
 export OPENCLAW_DISABLE_CLI_STARTUP_HELP_FAST_PATH="1"
 
 cd /root/openclaw
-exec node dist/entry.js gateway run --allow-unconfigured
+exec node dist/entry.js gateway run --allow-unconfigured > /root/gateway_debug.log 2>&1
 EOF
 
 chmod +x /root/openclaw/start_gateway.sh
 
 pm2 kill 2>/dev/null || true
-rm -f /root/.pm2/dump.pm2 /root/.pm2/logs/* 2>/dev/null || true
+rm -f /root/.pm2/dump.pm2 /root/.pm2/logs/* /root/gateway_debug.log 2>/dev/null || true
 
 pm2 start /root/openclaw/start_gateway.sh --name openclaw
 pm2 save
 
 echo "=========================================="
-echo "FIX COMPLETE! OPENCLAW GATEWAY STARTED VIA DIRECT ENTRY.JS!"
+echo "WAITING FOR GATEWAY TO INITIALIZE..."
 echo "=========================================="
+sleep 5
+
+echo "=========================================="
+echo "GATEWAY DEBUG LOG OUTPUT:"
+echo "=========================================="
+cat /root/gateway_debug.log | head -n 30
