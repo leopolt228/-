@@ -38,26 +38,28 @@ cat << EOF > /root/.openclaw/openclaw.json
 }
 EOF
 
-cat << EOF > /root/openclaw/run.sh
-#!/bin/bash
-cd /root/openclaw || exit 1
-export OPENCLAW_DISABLE_CLI_STARTUP_HELP_FAST_PATH="1"
-export OPENCLAW_STATE_DIR="/root/.openclaw"
-export OPENCLAW_CONFIG_PATH="/root/.openclaw/openclaw.json"
-export TELEGRAM_BOT_TOKEN="8754163681:AAE1FLnikHL0Mlr2VrtPoVbaiMea-LQiWkw"
-export GEMINI_API_KEY="${KEY}"
-export GOOGLE_API_KEY="${KEY}"
-export ALLOW_FROM="8146735349"
-exec node openclaw.mjs gateway run --allow-unconfigured
-EOF
+cd /root/openclaw && (pnpm install --no-frozen-lockfile --ignore-scripts 2>/dev/null || npm install 2>/dev/null)
 
-chmod +x /root/openclaw/run.sh
+node -e '
+const fs = require("fs");
+const path = require("path");
+const pkgs = ["ai", "crabline", "fs-safe", "libterminal", "proxyline", "uirouter"];
+for (const p of pkgs) {
+  const src = path.join("/root/openclaw/packages", p);
+  const dst = path.join("/root/openclaw/node_modules/@openclaw", p);
+  if (fs.existsSync(src)) {
+    fs.mkdirSync(dst, { recursive: true });
+    fs.cpSync(src, dst, { recursive: true });
+  }
+}
+' 2>/dev/null || true
 
-cd /root/openclaw && (pnpm install --prod --no-frozen-lockfile 2>/dev/null || npx -y pnpm@latest install --prod --no-frozen-lockfile)
-
-find /root/openclaw/packages /root/openclaw/node_modules/@openclaw -name "*.mjs" -exec sh -c 'for f; do cp -n "$f" "${f%.mjs}.js"; done' _ {} + 2>/dev/null || true
+find /root/openclaw -name "*.mjs" -exec sh -c 'for f; do cp -n "$f" "${f%.mjs}.js"; done' _ {} + 2>/dev/null || true
 
 pm2 delete openclaw 2>/dev/null || true
-pm2 start /root/openclaw/run.sh --name openclaw
+pm2 start openclaw.mjs --name openclaw --cwd /root/openclaw --env TELEGRAM_BOT_TOKEN="8754163681:AAE1FLnikHL0Mlr2VrtPoVbaiMea-LQiWkw" --env GEMINI_API_KEY="${KEY}" --env GOOGLE_API_KEY="${KEY}" --env OPENCLAW_CONFIG_PATH="/root/.openclaw/openclaw.json" -- gateway run --allow-unconfigured
 pm2 save
-echo "FIX COMPLETE! OPENCLAW IS RUNNING WITH GEMINI 3 FLASH!"
+
+echo "=========================================="
+echo "FIX COMPLETE! OPENCLAW IS RUNNING DIRECTLY!"
+echo "=========================================="
