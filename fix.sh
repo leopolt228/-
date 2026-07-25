@@ -38,7 +38,8 @@ cat << EOF > /root/.openclaw/openclaw.json
 }
 EOF
 
-cd /root/openclaw && (pnpm install --no-frozen-lockfile --ignore-scripts 2>/dev/null || npm install 2>/dev/null)
+export CI=true
+cd /root/openclaw && (CI=true pnpm install --no-frozen-lockfile --ignore-scripts 2>/dev/null || npm install 2>/dev/null)
 
 # 1. Duplicate all .mjs to .js in packages first
 find /root/openclaw/packages -type f -name "*.mjs" | while read f; do cp "$f" "${f%.mjs}.js"; done 2>/dev/null || true
