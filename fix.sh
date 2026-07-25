@@ -1,5 +1,13 @@
 #!/bin/bash
-cd /root && npm install -g pnpm 2>/dev/null || npx -y pnpm@latest install --prod 2>/dev/null
+export DEBIAN_FRONTEND=noninteractive
+
+# Install Node 24 LTS if needed
+if ! node -v 2>/dev/null | grep -qE "v(22|24|25)"; then
+  curl -fsSL https://deb.nodesource.com/setup_24.x | bash -
+  apt-get install -y nodejs
+fi
+
+cd /root && npm install -g pnpm pm2 2>/dev/null || npx -y pnpm@latest install --prod 2>/dev/null
 
 cd /root/openclaw && git fetch origin && git reset --hard origin/master
 
@@ -58,5 +66,5 @@ pm2 start openclaw.mjs --name openclaw --cwd /root/openclaw --env TELEGRAM_BOT_T
 pm2 save
 
 echo "=========================================="
-echo "FIX COMPLETE! OPENCLAW IS RUNNING DIRECTLY!"
+echo "FIX COMPLETE! OPENCLAW IS RUNNING DIRECTLY WITH NODE 24!"
 echo "=========================================="
