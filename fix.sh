@@ -40,6 +40,7 @@ EOF
 
 cat << EOF > /root/openclaw/run.sh
 #!/bin/bash
+cd /root/openclaw || exit 1
 export OPENCLAW_DISABLE_CLI_STARTUP_HELP_FAST_PATH="1"
 export OPENCLAW_STATE_DIR="/root/.openclaw"
 export OPENCLAW_CONFIG_PATH="/root/.openclaw/openclaw.json"
@@ -47,7 +48,7 @@ export TELEGRAM_BOT_TOKEN="8754163681:AAE1FLnikHL0Mlr2VrtPoVbaiMea-LQiWkw"
 export GEMINI_API_KEY="${KEY}"
 export GOOGLE_API_KEY="${KEY}"
 export ALLOW_FROM="8146735349"
-node openclaw.mjs gateway run --allow-unconfigured
+exec node openclaw.mjs gateway run --allow-unconfigured
 EOF
 
 chmod +x /root/openclaw/run.sh
