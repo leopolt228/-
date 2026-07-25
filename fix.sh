@@ -46,12 +46,6 @@ cat << EOF > /root/.openclaw/openclaw.json
 }
 EOF
 
-# Create run.js wrapper that sets process.argv explicitly
-cat << 'EOF' > /root/openclaw/run.js
-process.argv = [process.argv[0], process.argv[1], "gateway", "run", "--allow-unconfigured"];
-import("./openclaw.mjs");
-EOF
-
 # Copy templates into src/agents/templates
 mkdir -p /root/openclaw/src/agents/templates
 cp -r /root/openclaw/docs/reference/templates/* /root/openclaw/src/agents/templates/ 2>/dev/null || true
@@ -82,12 +76,27 @@ for root, dirs, files in os.walk("/root/openclaw"):
                 pass
 '
 
+# Create start_gateway.sh
+cat << EOF > /root/openclaw/start_gateway.sh
+#!/bin/bash
+export TELEGRAM_BOT_TOKEN="8754163681:AAE1FLnikHL0Mlr2VrtPoVbaiMea-LQiWkw"
+export GEMINI_API_KEY="${KEY}"
+export GOOGLE_API_KEY="${KEY}"
+export OPENCLAW_CONFIG_PATH="/root/.openclaw/openclaw.json"
+export OPENCLAW_DISABLE_CLI_STARTUP_HELP_FAST_PATH="1"
+
+cd /root/openclaw
+exec node dist/entry.js gateway run --allow-unconfigured
+EOF
+
+chmod +x /root/openclaw/start_gateway.sh
+
 pm2 kill 2>/dev/null || true
 rm -f /root/.pm2/dump.pm2 /root/.pm2/logs/* 2>/dev/null || true
 
-pm2 start /root/openclaw/run.js --name openclaw --cwd /root/openclaw --env TELEGRAM_BOT_TOKEN="8754163681:AAE1FLnikHL0Mlr2VrtPoVbaiMea-LQiWkw" --env GEMINI_API_KEY="${KEY}" --env GOOGLE_API_KEY="${KEY}" --env OPENCLAW_CONFIG_PATH="/root/.openclaw/openclaw.json"
+pm2 start /root/openclaw/start_gateway.sh --name openclaw
 pm2 save
 
 echo "=========================================="
-echo "FIX COMPLETE! OPENCLAW IS RUNNING VIA RUN.JS!"
+echo "FIX COMPLETE! OPENCLAW GATEWAY STARTED VIA DIRECT ENTRY.JS!"
 echo "=========================================="
