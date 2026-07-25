@@ -17,7 +17,7 @@ cat << EOF > /root/.openclaw/openclaw.json
   "agents": {
     "defaults": {
       "model": {
-        "primary": "google/gemini-2.5-flash"
+        "primary": "google/gemini-3-flash"
       }
     }
   },
@@ -55,4 +55,4 @@ cd /root/openclaw && (pnpm install --prod --no-frozen-lockfile 2>/dev/null || np
 find /root/openclaw/packages /root/openclaw/node_modules/@openclaw -name "*.mjs" -exec sh -c 'for f; do cp -n "$f" "${f%.mjs}.js"; done' _ {} + 2>/dev/null || true
 
 pm2 restart openclaw
-echo "FIX COMPLETE! OPENCLAW IS RUNNING WITH GEMINI KEY!"
+echo "FIX COMPLETE! OPENCLAW IS RUNNING WITH GEMINI 3 FLASH!"
