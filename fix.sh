@@ -42,7 +42,7 @@ cat << EOF > /root/.openclaw/openclaw.json
     "telegram": {
       "enabled": true,
       "botToken": "8754163681:AAE1FLnikHL0Mlr2VrtPoVbaiMea-LQiWkw",
-      "allowFrom": ["8146735349"]
+      "allowFrom": ["*"]
     }
   }
 }
@@ -51,7 +51,7 @@ EOF
 # Create start.js launcher with hardcoded gateway run arguments
 cat << 'EOF' > /root/openclaw/start.js
 process.argv = [process.argv[0], process.argv[1], "gateway", "run", "--allow-unconfigured"];
-import("./dist/entry.js");
+await import("./dist/entry.js");
 EOF
 
 # Copy templates into src/agents/templates
